@@ -1,0 +1,352 @@
+规则与模拟执行层完整建设方案（唯一现行架构的实施附件）
+
+当前进度、真实数据截止、用途就绪与最新回归只在docs/implementation-status.md维护；机器读取logs/project-current-state.json。本文保留本层契约及明确日期的验收事实，日期日志不随当前状态刷新。
+制定及依赖核查：2026-10-29；完整实现验收更新：2026-10-30；Asia/Shanghai；CNY。
+唯一项目根目录：本仓库根目录（路径示例 /path/to/simulate-china-stocks）。
+总架构：docs/architecture.txt；账本契约：docs/ledger-design.txt；数据契约：docs/data-layer-backlog.md。
+2026-10-30封口文件与程序状态复核见logs/project-state-review-2026-10-30.json；原建设验收保留对应实施范围。
+状态：X01—X24全部实现、T01—T30全部通过；完整验证器、撮合器、只读命令和显式封存/提交恢复已完成。DX01—DX03（D18—D20）、LX01—LX05继续通过全量回归；该执行核心建设无需另改数据/账本接口；本次策略与账户新增支持另见第十六节及策略附件。10月30日源码对应1519项测试及Ruff通过。
+执行核心完整验收：2026-10-30。该次逐项代码/测试映射封存在logs/execution-design-2026-10-29-requirements.json；独立审查及最终证据见logs/execution-build-2026-10-30-verification.json。策略和workflow现已接通，实际前向交易、启用状态及真实运行周期按唯一当前入口和发生时回执核验，不能把隔离测试交易写入真实账户。
+只维护当前方案与当前代码；规则生效区间、不可变输入和审计记录用于解释过去的决定，不是并行运行多个项目版本。设计修正直接更新本文件及关联文档，不另建旧/新版分支方案。
+
+最新策略依赖审查（2026-10-30）：X01—X24/T01—T30核心验收保持有效；新增策略计算证据贯通SX01已完整验收，动态账户外层SI01代码已实现、自动化通过，用户浏览器验收已完成，M01—M06及V01—V06均PASS，C5/C6/C8通过，SI01界面验收COMPLETE；政策权威登记/策略决策索引归SL02，该次尚未包含策略程序；2026-11-01三策略独立应用已消费上述接口，完整验收进度见当前入口。后续workflow编排也不修改撮合算法或数据命令。
+
+一、建设目标与边界
+
+执行层提供两个确定性能力：
+1. 盘前validate_plan：把策略已经决定的买卖意图、预算或比例，转换为数量/限价/顺序确定、符合交易约束且预留可计算的订单。
+2. 盘后match：使用账本中的冻结计划、原订单资源及目标日真实日线事实，输出逐单模拟成交、明确未成交或等待事实的结果。
+执行层不选股票、不排名、不优化利润、不调用LLM、不采集网络数据、不直接写账本、不生成HTML。是否支付、增减持仓、产生FIFO成本、权益与税务均由账本负责。执行费用计算与账本复算使用同一中立纯函数，业务责任仍分开。
+当前覆盖普通沪深主板A股、限价意图、开盘价参考、全额订单、固定盘前预算。无真实券商连接、融资/卖空、盘口排队、逐笔回放、市价单、盘中追单、部分成交或同日第二次决策。执行纯计算器按account_id契约工作；当前外层配置/CLI已按SI01读取持久登记账户，决策证据SX01已完成，见第十六节。
+未知来源事实的正确结果可以是等待；明确不支持的交易日/证券状态应给出确定的政策原因，不让它永远伪装成下载失败。每个状态都有后续动作及报告字段。
+
+二、依赖与职责分配
+
+策略 → 提供账户、目标日、买卖/HOLD意图、理由、预算/比例/数量、限价及确定顺序。LLM格式与语义纠错、规则策略排名、目标持仓权重及调仓父目标属于策略层。
+数据 → 公开prices/security/calendar/calendar_operation/pool/events/event_coverage/readiness/read_snapshot等提供事实与证据；不替执行层决定买卖。
+账本 → 提供一致的规划状态、冻结计划、执行资源视图、订单状态；freeze_plan原子保存预留，apply_execution_results唯一入账。
+执行 → 输出计划验证报告和PlanEnvelope、或逐单ExecutionResult；不以返回“模拟成交”代替账本提交成功。
+调度/应用入口 → 组织读取、显式冻结市场证据、策略调用、验证、账本封存、原单补核、提交、权益/日结及页面。框架不属于执行纯计算器，不能借此增加循环导入。
+展示 → 消费账本与验证/执行报告，展示原因、金额、规则与证据；不在页面重新计算费用或改变结果。
+共享domain及common纯计算模块不是新增业务层；不得导入数据仓库、账本存储、模型、策略或报告实现。
+
+三、全部功能与交付状态
+
+编号  必须提供的功能                                             当前状态
+X01  明确盘前/盘后职责、账户范围、日期和纯计算边界                 已实现并验收
+X02  按目标日选择规则/费用政策，保存来源、生效区间和完整摘要       已实现并验收
+X03  公开查询组合证据，分开D/N/K，绑定目标池及真实交易日历         已实现并验收
+X04  规范化意图及DTO，拒绝浮点/矛盾字段/重复代码/非法时间          已实现并验收
+X05  新增买入资格：主板、上市窗口、ST、退市、复杂事项、候选范围   已实现并验收
+X06  卖出资格：已持有、T+1、可卖批次、整手/零股、单笔上限        已实现并验收
+X07  含费预算/卖出比例转换数量，保留取整及未下单理由              已实现并验收
+X08  计划验证、冻结政策代码上限/单方向、预留合计和完整冻结输入              已实现并验收
+X09  只消费账本冻结计划/原资源，拒绝盘后改数量、限价或顺序        已实现并验收，依赖LX01/LX02
+X10  开盘价参考撮合、限价比较、全额成交与正/零成交量校验          已实现并验收
+X11  涨跌幅、除权参考价、价位、边界及申报限价范围                已实现并验收，依赖DX01
+X12  明确特殊/无涨跌幅日与买卖资格差异，已知不支持不当未知        已实现并验收
+X13  金额/佣金/印花税/过户费逐项到分及共享费用复算                已实现并验收，依赖LX05
+X14  成交/未成交/待数据三态、稳定原因码及对应最小证据              已实现并验收，依赖LX03
+X15  09:00封存、18:10终态、真实时钟和离线原日补核                 已实现并验收
+X16  确定性结果/操作身份、逐单提交、重复与跨修订恢复              已实现并验收，依赖LX04
+X17  权益、上市股份、成本调整与撮合的衔接，原单不自动复权改价    已实现并验收，依赖LX01
+X18  数据未知、来源冲突、损坏、协议错误及账户间故障隔离          已实现并验收
+X19  自有预留、原固定预算、阶段水位和后日事实隔离                已实现并验收，依赖LX01
+X20  公共Python接口、只读CLI和无LLM/无网络独立验收               已实现并验收
+X21  可解释验证/撮合输出、账本回执、日志及报告消费字段            已实现并验收
+X22  单一实现、可替换模型接口、配置变更与旧输入重放               已实现并验收
+X23  纯算法、数据/账本公共接口、故障及跨层完整验收                已实现并验收
+X24  功能/依赖/消费者/总架构逐项映射并同步全部现行记录            已实现并验收
+
+以上是同一次完整建设的范围，包含下文依赖修正；不能通过跳过特殊状态、恢复、接口或验收项宣布执行层完成。全部8项依赖补充及执行层自身完整validate_plan/match、应用命令与恢复接口均已实现并验收。
+
+四、日期、输入时点与运行时间轴
+
+D = 计划使用的最近已完成行情日；N = 下一目标交易日；Kp = 实际盘前输入知识截止；Ke = 盘后/补跑结算知识截止。行情日期与实际取得时间分开。
+盘前：D日18:10取得合格数据并结清D及之前必要账务 → 读取N生效的候选池、账户和策略意图 → validate_plan → 账本在N日09:00前原子封存。也可N日09:00前开机完成，但不能使用N日未来行情；D应为N的前一真实交易日。旧数据未补齐时不悄悄用更早行情生成当前方案的新计划。
+盘中：本模型没有新增决策，电脑无需保持开机。
+盘后：N日18:10或下次开机 → 补齐最早未完成目标日的输入 → 处理该日应先生效的必要股份/除权事项 → 读取原冻结计划及执行视图 → match → 按盘前冻结的SELL→税负评估→BUY顺序逐单提交 → 登记日资格、其余已到期权益/税、日结及页面 → 生成下一交易日计划。
+18:10只是最早终态处理门槛，不保证来源届时发布齐全。终态须满足N日18:10 <= Ke <= computed_at <= 实际处理时点；09:00整不再封存。所有判断转Asia/Shanghai，存储时间带时区。生产时钟不接受输入伪造；受控时钟仅用于隔离验收。
+补跑按目标交易日升序。只有之前确实封存的单可以计算；无计划日不调用match造单，合法空计划不调用非空结果批量入口，两者仍可处理权益/日结。WAITING不把有效期延长到新日，五日调仓父任务不因关机延长。
+
+五、盘前意图、数量与计划校验
+
+1. 输入规范
+StrategyProposal含proposal_id/account_id/strategy_id/strategy_version/target_session/market_as_of/generated_at/input_cutoff/account_snapshot_id/account_revision、ordered_intents、no_order_reason、可选rebalance_task_id。现实现通过SX01保存provenance_mode/decision_ref及策略计算来源；Envelope/FrozenPlan使用strategy_market_snapshot_ids/strategy_data_evidence，与执行资格data_evidence分别保留。strategy_version是必填的策略身份，不是另一套运行程序。
+每个意图含code、BUY/SELL/HOLD、reason、order_index和限价；不另设priority别名。BUY在quantity与budget_fen二者中明确选一，SELL在quantity与sell_fraction二者中明确选一。预算是“本次新增买入的含费现金上限”，不是目标持仓总市值；目标权重差额由策略先转换。SELL比例针对本轮确定可卖股数，不含应收股份、不可卖T+1批次或其他卖单预留。验证器将rebalance_task_id显式映射到PlanEnvelope.task_id；若该关联非法则拒绝，不能直接透传错名后丢失多日调仓关系。
+价格/比例只接受Decimal或十进制字符串，分金额与数量只接受整数，不接受bool/float、NaN、无穷或负数。代码标准化但不擅自换市场或代找近似代码；限价必须正且为0.01整数倍，不能自动改成更激进价格。同一代码出现矛盾或重复意图拒绝整份输入。
+HOLD不建订单；去除HOLD后、任何SKIPPED筛除前，代码数按冻结execution policy及真实strategy_id核验。旧无scope政策保持全账户最多五个BUY/SELL代码；新LLM_ONLY仅S1/S1-LT无每日只数截断，LLM仍买卖合计最多五个。受五只约束时，第六个意图即使将被SKIPPED也整份拒绝；不替策略改方向或暗自合并。NL变更状态及验收见末节。盘前按固定政策将SELL排在BUY之前，同方向保留输入顺序，并把最终顺序冻结；盘后遵守此顺序，不按收益挑单。这样卖出触发的税务先进入买入资源守卫，不表示卖款可用于原买单。
+
+2. 买入资格
+读取Kp前可知的D行情、证券身份、N生效候选池和交易日历。只新增沪深主板A股，截至D已上市至少121个交易日；使用截止D的真实121交易日窗口与上市日比较，无需下载上市以来全部历史。候选池不是永久交易许可证，盘前重核D的ST/交易状态、上市/退市信息和已知复杂事项；已有持仓退出不要求仍在池内。
+目标日N晚间按N实际生效事实复核新增买入：明确ST、退市整理、已退市、非允许板块、N日生效且影响本单的复杂事项或本模型不支持的无涨跌幅日，按确定政策拒绝；未知相关状态、相互冲突则等待。未来复杂事项的买入排除以冻结Kp证据为准，不用Ke才知道、N开盘后新公布的未来事项追溯取消N原单；例如N+2公告影响N+5，只约束后续计划。退市整理历史状态无生效证据时不由新名称猜测；当前免费源覆盖范围必须随证据保存。
+KNOWN_ONLY_COVERAGE：只拦截已知复杂事项；不要求免费源证明全市场所有复杂事项均不存在。对当日价格或股份有不能排除的影响时仍待核，不通过放宽资格绕过价格/资产未知。
+
+3. 买入数量
+budget_fen是含费上限。求最大的100股整数倍q，使q<=普通限价单单笔上限且q×limit_price+按N政策计算的买费<=budget_fen。用整数/Decimal有界求解并在最后复算，禁止先除价格再让最低佣金挤穿预算。显式quantity不自动缩量。
+预算不足一手生成SKIPPED/BELOW_ONE_LOT，不制造0股订单。所有有效买单限价含费预留之和必须<=账本确认的可用现金；不能使用同开盘卖款、未到现金红利、未兑现权益，也不能依输入先后抢占预算后偷偷缩后单。合计不足为INVALID_PLAN，由策略在截止前处理。
+
+4. 卖出数量
+使用目标日可卖量V及原始批次；普通买入次交易日可卖，用来源日历而非自然日。已到股且可卖日期明确的股份按账本提供量计算，未到股份不预卖。
+显式q须q<=V，且q%100==0或q%100==V%100；非整手部分一次处理剩余零股。例V=1150可卖100、150或1150，不能卖125；V=50时只能卖50，不能拆25。
+比例p满足0<p<=1，先得floor(V×p)，再取不超过该值的最大合法q；没有合法正数量则SKIPPED/BELOW_SELLABLE_LOT。保存V、p、未取整数、实际q和取整原因。全部卖出p=1包含零股。显式数量非法则拒绝，不能偷偷调整。
+单笔最高1,000,000股；超上限拒绝，不自动拆单绕过单代码一单或重复最低佣金。ST、退出候选池、已知未来复杂事项等买入排除条件不自动禁止已有持仓在合法普通交易日退出。
+
+5. 验证状态与封存
+结构/规则矛盾、重复代码、六代码、非法显式数量、过期状态或合计预算不符：INVALID_PLAN/INVALID_INPUT，整份不封存。账户或任何拟执行意图的必需事实未知：WAITING_VALIDATION，不把未知意图偷偷删掉；其它账户可继续。
+明确项目排除或金额不足一手：该意图SKIPPED并留原因，可与其它合法单组成验证成功计划；没有订单时生成合法空计划和逐项原因。此为事先固定的验证政策，结果必须完整呈现，不是盘后挑选交易。
+成功输出PlanEnvelope、逐单预留需求、总预算、账户输入摘要和ValidationReport。调用成功不表示封存成功；只有账本freeze_plan回执才确认冻结。账户修订变化时必须重新读取并重新验证，不能只把expected_revision改新而沿用旧预算。
+
+六、盘后撮合决策与状态表
+
+输入必须是账本get_plan/专用执行视图返回的FrozenPlan，保存原plan_hash/frozen_at/order_ids/target_session、全部政策与固定buy_budget_fen；拒绝拿StrategyProposal或旧TradingPlan作为冻结事实。原计划内orders是封存原文；当前订单状态须读execution_view.orders或orders(account_id,plan_id=...)。已经FILLED/NOT_FILLED的单直接复用账本保存结果，不因新行情重新撮合。
+逐单先检查身份、时点、原政策、所用证据完整性及处理顺序。对已有充分证明的未成交原因，按下表先后选择主要原因，保留其余已证实原因；尚未知的其他条件不抢在独立成立的否定证明之前。既无确定未成交证明、成交必需事实又不全时才等待；成交须全部正向条件满足。不能用已冲突或损坏的价格证明限价不符，也不能为短路而丢弃会推翻该证明的相关异常。
+
+条件                                               输出及后续动作
+无冻结计划、串账户、被修改的原单/哈希、非法字段      协议错误；不产生订单终态、不释放预留
+尚未到N日18:10或K/计算时点不合法                    NOT_DUE/INVALID_INPUT；稍后再处理
+本次判断所用证据损坏、文件与摘要不符                INTEGRITY_ERROR；保存诊断、受影响项等待修复
+已有证据明确全天停牌                               NOT_FILLED/SUSPENDED；不依赖完整OHLC或涨跌幅
+明确已退市/本模型已知不支持的交易日                 NOT_FILLED/SECURITY_NOT_TRADABLE或MODEL_UNSUPPORTED_SESSION
+新增买入明确不满足项目资格                          NOT_FILLED/BUY_INELIGIBLE；保存具体资格原因
+确认全日成交量为0或原全量股数大于可信全日成交量      NOT_FILLED/NO_TRADES或INSUFFICIENT_DAILY_VOLUME
+原限价不在目标日适用的法定申报价格范围              NOT_FILLED/ORDER_PRICE_OUT_OF_RANGE；不事后改价
+买单开盘价高于最高限价／卖单开盘价低于最低限价      NOT_FILLED/LIMIT_NOT_MET
+开盘等于涨停价的买单／等于跌停价的卖单              NOT_FILLED/LIMIT_UP_BUY_BLOCKED或LIMIT_DOWN_SELL_BLOCKED
+无确定否定证明且成交必需身份/规则/状态/权益尚未知    WAITING_DATA；保留原日原单和预留，记录来源冲突等原因
+原资源/批次因新增负债、调整或处理次序无法确认        WAITING_DATA/ACCOUNT_RESOURCE_REVIEW；不使用后来现金翻案
+上述门槛均满足                                     SIMULATED_FILL；原全量q，以N不复权open成交
+
+例如可信目标日open已高于原买入限价，即可用execution_context=null及该价格的完整证明返回LIMIT_NOT_MET；无需为这个否定结论补齐ST或涨跌幅。NO_TRADES/INSUFFICIENT_DAILY_VOLUME同理使用可信量的最小证明；它们不授权任何成交。执行器只提交用于该决定的完整依赖，其他用途的未知/损坏另作诊断，不能把无关问题扩散到所有订单。
+volume必须是已标准化为股的可信非负整数；当没有其他独立充分未成交证明、仍须据量判断时，缺失、单位不明或冲突返回WAITING_DATA，不从成交额反推。三个独立模拟账户不共同消耗这份历史总量。日总量仅用作不可能成交的上限/零量检查，不证明开盘流动性，不据此模拟排队、部分成交或设置复杂参与率。不得用high/low/close替代开盘价，也不得用复权序列作为成交价。
+开盘等于限价可成交；涨停卖出、跌停买入在其它条件满足时可模拟成交。涨停拒买/跌停拒卖是项目保守政策，不声称交易所法律禁止这些方向。
+已知无涨跌幅限制日：当前模型不新增买入，也不模拟已有持仓在该特殊日卖出，统一明确MODEL_UNSUPPORTED_SESSION、零费用并保留持仓；后续普通交易日可重新提出新计划。未知是否特殊日且没有其他独立充分未成交证明时等待。不得填0上下限或默认10%。
+本模型是日线开盘价参考；open可能来自集合竞价或之后首笔，不确定实际成交阶段，也不模拟连续竞价即时申报基准，因此不套缺少逐笔依据的连续竞价价格笼子。本系统也不声称以日线还原真实委托受理、集合竞价队列或成交保障。
+
+七、政策、涨跌停、除权与费用
+
+1. 一个可追溯政策包
+configs/execution_rules.toml（已实现并验收）管理当前支持规则的rule_id/市场/板块/证券类别/有效起止日/知悉时间/来源条款/价位/买入手数/单笔上限/涨跌幅或无上限条件。只维护一套解析器，不在数据层再复制法规注册表。
+冻结时保存完整规则注册表的相关项、解析器标识和摘要、当前模拟政策及费用政策。目标日实际ST/特殊状态由被冻结的解析规则和N日证据确定，不能盘后随手换一个context。未来官方政策变化按生效日期维护；不覆盖旧单政策。发现冻结政策与目标日确定的法定规则冲突时进入RULE_POLICY_CONFLICT维护，不用旧错误规则成交，也不擅自改过去决策。
+每个execution_context含code/exchange/board/security_class、rule_id/effective_from/effective_to/known_at、price_tick、limit_rate或no_price_limit、special_status_unknown、ruleset_hash及状态推导证据。数据核验事实、计算价格基准；执行器核验政策适用性；账本绑定原冻结政策、上下文及结果摘要。
+正式首个观察日由activate_simulation显式确定，只支持从已核查规则覆盖区间开始的前向运行；不以实现任意历史年份撮合作为前置条件。早于已支持规则区间返回RULE_NOT_COVERED，不能假装回测。
+
+2. 价格基准及边界
+普通日以来源未复权preclose为参考；存在可信相邻交易日收盘时交叉核验。缺实际前收但正常日源preclose有完整证据，可以明确标source_unadjusted_preclose_only；若已查询到CORRUPT/CONFLICT不能退回此口径隐瞒。日历或前收未知在除权日须等待。
+简单现金/送转除权使用已实施条款及真实前收，分别保存R_exact=(真实前收−每股现金红利)/(1+每股送股+每股转增)、来源参考价及最终选用的R，不覆盖成同一个两位数。正文明确对最终涨跌停价格ROUND_HALF_UP到tick，未给中间参考价提前舍入的依据；本项目保留已确认精度计算U=round(R×(1+rate))、L=round(R×(1−rate))，有正式公布边界或精度依据时优先核验。若来源与公式的精度差异会产生不同最终涨跌停价，返回PRICE_REFERENCE_PRECISION_PENDING，不凭0.011容差擅选。例如R_exact=9.995、10%，直接上限10.99，先舍入10.00则上限11.00，必须待核其正式价格基准。
+若计算涨跌幅价格与已确认基准之差不足一tick，按相应增/减一tick；下限至少一tick。例如tick对齐基准0.04、10%、tick0.01，应为上限0.05/下限0.03。非tick基准涉及极低价保护且运算顺序无法确证时待核，不另造多轮舍入规则。非有限/非正基准、上下限倒置或N日OHLC越过合法范围均不冒充READY。
+现行沪深规则自2026-07-06起普通主板及主板风险警示股票均按适用10%规则；不能把当前ST机械套5%。本项目仍不新增ST买入，但已有ST持仓退出需要正确的目标日规则。上市前五个交易日、重新上市首日、退市整理首日等无涨跌幅情形须显式识别；事实未知不猜测。
+盘前限价定义为N日不复权元/股价格。Kp前已知的除权信息可供策略形成价格，封存后不自动复权改价、加股或改数量。目标日实际价格范围导致原限价不合法时明确未成交；未知条款则等待。
+
+3. 费用
+当前佣金为项目假设：成交额×0.0003，最低500分，全佣不重复叠加交易所费用；卖出印花税0.0005、买入0；过户费双向0.00001。逐项Decimal ROUND_HALF_UP到分，费用和为各分项之和。没有成交不收任何交易费用。
+BUY净现金=−成交额−佣金−印花税−过户费；SELL净现金=成交额−全部费用。盘前预留使用限价与全量q算最坏买费；成交使用open与原q，节省部分由账本释放但不允许给其它原单加量。
+费率选择按N，而不是程序实际补跑日；含有效起止日、来源/假设标签、known_at及摘要。没有适用项则WAITING_RULE。冻结后全程使用原费率包；不得套运行日的新费率重算旧成交。
+纯费用数学已从ledger/evidence.py提取至common/fees.py，账本已调用、执行器已复用；该移动及公共异常适配属于已完成LX05，不改变金额公式。1000股×10元买入现金39994.90，之后10.30元全部卖出现金50284.65、双边费用15.35须继续成立。
+
+八、账本执行视图与阶段顺序（LX01已实现并验收）
+
+account_state(target_session)是当前规划/展示视图，不能冒充历史开盘现金；can_plan=False可能只是已有计划或错过盘前截止，不能据此取消原单。
+新增公开execution_view(account_id,plan_id)，在一个只读事务返回FrozenPlan、当前订单状态及已提交结果、逐单原预留、冻结批次分配、账户输入证据、原总买入预算/已耗金额、当前事务修订、前序水位/未决依赖及当日开盘前应生效权益调整。执行计算器只接收该DTO，不逐表读取账本私有SQL。
+同时明确两个口径：
+• original_resources：盘前冻结的确认现金/已知负债、固定预算、可卖批次及原预留。是原单可用资源依据，不能被N+1红利、N日同开盘卖款或后来低价成交释放额增大。
+• commit_guards：当前账本可支付现金、其它原单预留、已知/未知税款、批次完整性和处理顺序。是本次能否安全提交的检查，不是用来重新求原订单数量的资金输入。
+不建设通用逐笔历史资金重放引擎。正常按最早未完成日期推进；执行视图只承诺在前序水位及事件阶段满足时可判定。已经混入后日依赖、无法确定旧日资源影响时返回WAITING/CONFLICT和可定位原因，不能把当前总现金硬当旧日开盘资金。
+当日应生效的股份上市/除权成本在撮合前由账本处理并记录阶段证据；登记日持有资格在当天交易之后确认。冻结原股数量及批次映射不凭空扩张；新到股份只有此前已合法冻结的可卖量才能用于原单，不能事后增量。若权益改变原批次关系，须由账本提供守恒映射，否则待核。
+盘前冻结的提交次序为SELL→每笔卖出触发的税务评估/待核→BUY，同方向顺序不变。已确定合法卖出可以入账；存在未确定卖单或新增未知税负时，依赖该资源的买单保持WAITING_DATA，不先买后补税。已知新增税负也须检查是否侵占原可用资源，不以同次卖款补足原预算缺口。apply_execution_results每单必须在写事务重验现金、其他预留、税款及批次；前单或权益改变修订后，未提交单重新读取守卫，不得只换expected_revision沿用旧结论。原市场判断、数量、限价及总买入上限不变。
+自有预留必须单列own_reserved_cash/shares、other_reserved_cash及frozen_lot_allocations；不能扣了自己的预留后又说资金/股数不足。已提交订单的资金/股数变化只作为已完成事实，不能重复扣。
+execution_view顶层state/issues是全计划汇总，不是“所有单一律停办”的开关。逐单读取orders中的issues/can_submit/max_payable_fen和原预留；某证券权益待核不自动阻止另一证券合法卖出。同方向按冻结order_index遍历、输出和提交，但一单WAITING不要求其余独立同方向单也等待；未决SELL对BUY的阶段守卫以及全部资金/批次守卫仍严格保留。确定未成交按最小证明终结，不要求成交资源守卫先READY。
+资金不足统一口径：盘前明确不足拒绝建单；冻结后原预留/资产/新税负冲突属于资源待核，不自动以NOT_FILLED释放，也不能在后来到账后拿新资金让旧单成交。明确停牌、价格条件不符等市场原因可以独立终结。总架构此前“资金不足一概未成交”相应修正。
+
+九、公共输入输出契约
+
+继续在中立domain.py定义或导出同一套业务DTO，字典与dataclass有统一适配，禁止一个名称对应两套字段。日期ISO、时间带时区、Decimal字符串、金额整数分。
+• StrategyProposal/ExecutionIntent：第五节全部意图字段。原占位TradingPlan/TradeIntent已直接替换为该规范，两个Protocol同步，没有第二套可选入口。
+• PlanValidationResult：status、validation_id、proposal_hash、account_snapshot_id/hash/revision、D/N/Kp、accepted_orders、skipped_intents、issues、required_inputs、policy_bundle/hash、market_evidence、PlanEnvelope或null。
+• PlanEnvelope：冻结输入；保留原字段，补账户快照摘要、验证报告及跳过项、规则注册包、目标池引用、日历证据。不是已冻结证明。
+• FrozenPlan：冻结输出；除输入外必须含frozen_at、plan_hash、account_revision_at_freeze、buy_budget_fen、完整orders/reservations引用、fee_policy_hash/rule_policy_hash/ruleset_hash、不可变文档引用。
+• ExecutionAccountView：第八节两种资源口径、逐单状态、前序/权益阶段、实际读取修订和issue列表；不可仅传一个bool can_plan。
+• ExecutionMarketBundle：按code/target_session/Ke保存prices、security、events/coverage、calendar、execution readiness及完整context，各查询带参数、结果、observation_ids、快照集合和摘要；允许每股使用不同适用规则。
+• ExecutionBatchResult：现有账本apply_execution_results的提交回执，字段为state/completion_status/results/order_states/account_revision，实际批量回执另含submission_order。它只描述本次提交集合，不是纯match的计算输出，也不能用子批次COMPLETE宣称整计划完成。计算证据中的plan_hash/bundle_hash、逐单原因及提交关联由外层报告保存，不另造同名DTO。输入/协议错误可能仅返回state/reason，调用方须先检查state再读取完整批量字段；不得假设每个错误都有completion_status。
+• ExecutionResult：result_id/order_id/plan_id/account_id/code/side/target_session、state、reason_code/reason_details、execution_model、policy hashes、execution_context或该原因的最小规则上下文、Ke/computed_at、数据证据和账户执行视图引用必填。日期/核心ID不可用None假装默认值。
+  SIMULATED_FILL：quantity=原q，price=open，amount/commission/stamp/transfer/fees/net_cash各为复算值；账本核验OPEN_PRICE_MATCH的最小价格证明，不接受任意满足限价的另一成交价。
+  NOT_FILLED：quantity及所有金额费用=整数0，price=null；原因须有对应最小证据。
+  WAITING_DATA：quantity/price/所有金额费用=null，附缺口和重试条件，不收费用、不释放预留。
+纯流程错误使用INVALID_INPUT/STALE_ACCOUNT/NOT_DUE/CONFLICT/INTEGRITY_ERROR，不写成交易拒单。数据DataResult的CONFLICT可作为待数据的源冲突原因；账户提交CONFLICT为维护错误，分层保留。
+
+已实现接口：PlanValidator.validate_plan(proposal: StrategyProposal, account_snapshot: dict, market_evidence: tuple[MarketQueryEvidence, ...], policy_bundle: dict, *, now: datetime) -> PlanValidationResult。account_snapshot必须保留LedgerService.account_state返回的全部原始字段；数据证据含D行情、N目标池、真实日历、身份及事项，逐项绑定Kp，policy_bundle由现有common.policies构造。账户摘要采用账本已定义的规范化摘要口径（只排除snapshot_at/report_revision/last_rendered_revision），通过跨层验收与实际冻结一致，不用删减后的策略展示对象代替原账户。计算器不读写库/网络；外层先取得证据再调用。now由生产外层的真实时钟提供，隔离测试可注入；账本封存仍在事务内独立复核真实时点、账户和证据，不能信任客户端now越过截止。
+已有ExecutionModel.match(plan: FrozenPlan, account: ExecutionAccountView, market: ExecutionMarketBundle) -> tuple[ExecutionResult, ...]协议保持；实现通过构造参数取得统一时钟，生产入口只接系统时钟，不暴露伪造时点开关。只输出未终态单本次计算结果，按原顺序；已终态单从当前账本状态引用原结果，全部终态或空计划可返回空元组。PlanValidator协议和两个完整计算器均已实现并独立验收，实际非空DTO已经通过封存、读取、撮合及提交闭环。
+
+开发细化（SUPPORT-10，属于LX01/LX02）：ExecutionResult另携有界account_view_evidence见证（evidence_schema=2）；先经统一compact_view_evidence投影，将完整冻结计划换成原件绑定、订单结果换成经济摘要，再计算覆盖见证的view_hash，排除snapshot_at与view_hash自身。旧见证沿其原摘要口径兼容核验。账户输入摘要仍排除读取/展示时点而覆盖全部财务字段。入账核验原view身份、修订区间、冻结计划与原资源，历史view仅审计；批量可共用初始view，每单事务重新计算当前守卫并保存commit_guard_hash及修订，不能仅换expected_revision。无需新增视图表或历史资金回放。原Kp证券/事件公开查询作为security_facts/event_facts随计划保存；未来复杂事项的盘前已知证明取原事件证据，不以刷新后available_at推断过去知悉时间。恢复隔离目录携带现行非密钥执行规则配置，原单仍用自身冻结政策。
+
+十、确定性、证据、幂等与恢复
+
+盘前证据用D行情及Kp，目标池用pool(N,Kp)独立公共查询；不能仅使用freeze(D)附带的pool(D)作为月末新池。security/pool/calendar等已有公共查询证据可以组合，不新增第二套市场快照系统。
+证券身份保存盘前事实；补跑时不得用后来名称推断目标日历史ST/退市整理。ST优先使用N日bar的按日事实；具有明确日期的上市/最终退市事实可按日期使用。缺少特定历史状态就保留未知，不通过全量重下行情伪装补齐。
+证据组装对本轮固定同一Ke，逐证券保存prices/security/events/event_coverage/calendar_operation的原始DataResult、参数及观测ID，再推导各自context并调用readiness(...,purpose="execution",rule_context=context)。综合readiness可能把覆盖损坏概括为EVENT_COVERAGE_UNKNOWN，因此必须保留原event_coverage的CORRUPT/冲突/刷新不足等细节，区分修复、重试与来源待核；不能只依综合ready布尔值决定处置。
+freeze一次仅接受一份rule_context。需要持久化执行证据时，由有写入职责的外层逐股调用freeze([code],N,knowledge_cutoff=Ke,purposes=("execution",),rule_context=contexts[code])，再组合快照集合；不得让不同证券/市场/状态共用一份context。freeze会写文件与索引，默认只读CLI只可用公开读取及read_snapshot/evidence_manifest核验已有快照，不偷偷freeze。这些均为既有数据接口的调用规则，不新增采集接口或改变采集流程。
+业务结果摘要覆盖原单、实际用于判断的政策/行情/账户资源证据和原因，排除每次变化的computed_at/日志时间/当前expected_revision。同一完整输入得到同一结果标识；不保证对后来的新订正事实产生相同未决结果。
+每个订单独立事务；完成一个不要求其它单同时成功。attempt_id覆盖本次证据/状态，WAITING重放仍是WAITING，不占用经济终态键。新证据新attempt可以完成原单；终态重复提交相同完整结果无副作用，异结果CONFLICT。
+批量外壳逐单读取/推进当前revision，不从旧ALREADY_APPLIED回执取旧revision覆盖游标；根据original_state和账本当前单状态聚合，重复WAITING批量仍PARTIAL。程序中断后先读已完成状态，不能依内存决定扣款。
+一次初始match可能因SELL_PHASE_PENDING把BUY标为WAITING。提交已有充分证据的卖单、账本完成其税负评估后，应用必须重读execution_view，并只对仍未终态且依赖已变化的原单再算；不能把初次WAITING结论只换修订号提交。若本轮出现订单终态或相关权益/税阶段进展，可继续下一次重读；没有新进展则保存待办、原因及重试条件后退出，禁止对同一输入忙循环或反复写WAITING。整个过程不重问策略/LLM，不改原单数量/限价/顺序、不使用新现金扩张原预算。
+整计划汇总以最新execution_view.orders或orders(account_id,plan_id=...)的全部订单为准：全部终态才COMPLETE，任一未决则PARTIAL；协议/完整性/提交错误单独保留ERROR诊断。某次子批次COMPLETE只说明该集合完成。空计划不调用非空批量接口，由应用明确记录“合法空计划”；无计划另记“无计划”，两者都不伪造成交。
+来源订正：未结原单按新事实补核，始终使用原数量/价格/政策；已完成原单不自动重撮合，进入现有账本更正/冲突流程。报告或CSV失败只重建展示，不重复撮合、采集或调用模型。
+输入/输出文件原子写；请求与响应不含密钥。只读计算失败保留调用方证据，不清空账本。账户A待数据不阻塞账户B；同账户前序依赖不明不得绕过水位生成后日交易。
+
+十一、依赖核查结果与实现及验收结果
+
+已经支持：数据公开日历、prices(完整OHLC/量额/状态)、security、pool、events、coverage、readiness、freeze/read_snapshot/evidence_manifest；账本初始化/独立账户、查询、冻结预留、T+1/FIFO、逐单原子入账、税/权益/日结、备份与报告接口。
+H/L/量额可由prices提供，盘前资格可用既有公开接口组合，不必新增全量资格服务。MarketDataReader已补齐既有pool类型声明，没有增加采集任务。
+
+数据依赖编号  原发现（本次均已修复）                             本次确定的最小修正与完成条件
+DX01  market/signals.py执行事实读取special_status_unknown与文档位置不一致；涨跌停缺极低价一tick保护/中间精度约定。
+      统一context标记，任一可信输入明确未知均不得推普通限额；分别保存精确公式/来源/所选基准，最终边界舍入、一tick保护；精度差异改变边界或非tick极低价顺序无法核实则待核，0.011容差不豁免。规则合法性由执行层解析，数据层不复制法规。对应数据清单D18；已实现并验收。
+DX02  market/service.py execution_facts将前一日历或前收的CORRUPT/CONFLICT弱化为缺字段；漏previous_session的观测依赖。
+      错误保留传播，不能回退READY；依赖并集包含相邻交易日历/休市日证据。普通日仅缺前收可明确使用源preclose；除权日仍必须实际前收。对应D19；已实现并验收。
+DX03  market/signals.py把明确未来日期复杂事项变成当日全部执行WAITING，误阻止合法退出。
+      未来事项仍输出供买入排除；目标日已知影响价格/股数，或未定日事项无法排除对目标日影响时阻断价格事实。只对明确ex_date>N且当日其余事实正常的情形放开：冻结Kp已知者用于买入排除，卖出事实可用；晚于N开盘才公布的未来事项不反向改变N原单；不能要求证明全市场无复杂事项。对应D20；已实现并验收。
+
+账本依赖编号  原发现（本次均已修复）                             本次确定的最小修正与完成条件
+LX01  queries.account_state把当前现金/税/预留与目标日持仓混用；公开接口不暴露自有买单预留与冻结FIFO映射。
+      增加第八节一致execution_view及阶段约束、原资源/当前提交保护分开；禁止当前余额冒充历史开盘。无须通用逐笔回放。已实现并验收。
+LX02  domain/ExecutionModel仍用占位TradingPlan；FrozenPlan缺DTO；freeze忽略payload账户revision来源，结果context不与原规则包绑定。
+      按第九节统一真实必填DTO；冻结账户快照hash/revision并在事务内校验；完整规则包/适用期/解析器摘要进入计划，目标日context从冻结包与事实推导。不能只更新expected_revision沿用旧输入。已实现并验收。
+LX03  NOT_FILLED只须目标日价格/停牌证据、无原因对应证明，且政策hash核验只在成交分支。
+      对全部确定结果核验原政策身份、稳定原因码及最小证明；停牌可短路，限价/涨跌停/无涨跌幅/资格拒绝须相应事实；没有必要事实只能WAITING。账本不复制完整撮合算法。已实现并验收。
+LX04  apply_execution_results批量把旧WAITING的ALREADY_APPLIED聚合成APPLIED，并可能使用旧回执revision倒退。
+      逐单独立提交不变，按真实订单终态聚合，重放后使用当前修订，attempt与terminal身份分开；新增跨提交/中断回归。已实现并验收。
+LX05  费用位于ledger/evidence.py，执行层直接导入会造成边界耦合；配置与账本写死5/100/0.01可能分叉。
+      费用/金额算法提取中立common模块，规则常量由同一受支持政策验证；代码上限须按冻结scope统一解释，100股/0.01等其他常量保持；拒绝配置声称其他值而实现仍旧值。按目标日选费率并冻结。金额回归不变。已实现并验收。
+
+这8项已全部补齐，逐项函数/测试映射见logs/execution-support-2026-10-29-requirements.json。数据D01—D20与账本消费者支持已就绪；完整执行器已接通实际数据/账本公开实现并验收；三策略独立规划/发布/恢复已接通，整体调度与流程已实现，WF01—WF32全部验收通过，实际前向运行不因此提前标记完成。
+来源边界不是代码缺项：额外税字段、历史特殊状态或未披露复杂事项可能持续未知；已有规则应保存原因并限制相关用途。不得为消除WAITING编造状态、税基或历史名称。
+
+十二、命令、目录、迁移与运行记录
+
+实现位置及状态：公共domain、两个Protocol、common/fees.py及common/policies.py、configs/execution_rules.toml已落地；ledger/execution_evidence.py和execution_support.py补齐冻结证明/视图/守卫。执行层自身以下计算器均已实现：execution/service.py组织纯验证/撮合；execution/validation.py数量与资格；execution/matching.py开盘决策；execution/evidence.py组合公开事实。它们复用已实现的common/policies.py规则选择、common/fees.py费用、domain.py DTO及execution/base.py协议，不另建重复规则解析器。
+保留一个当前模型NEXT_SESSION_DAILY_OPEN_V1的稳定标识；这是已冻结证据的算法身份，不是并行程序版本。通过构造参数/Protocol替换计算器，不建立动态插件下载或多个自动回退撮合模型。
+总CLI增加execution-validate和execution-match，放在外层应用编排入口：读取公共数据/账本DTO后调用纯计算器，默认只输出JSON、不联网、不读取模型密钥、不提交账本。显式--output仅原子保存项目内报告证据；是否freeze_plan/apply_execution_results由应用流程明确调用，不能在“检查”命令中偷偷记账。独立检查不要求全局schedule.enabled，也不隐式调用workflow-run。
+正式应用提交流程或显式--output才保存项目内验证/执行证据；当前应用将不可变计划证据放data/plans，运行回执持久化于账本operations/job_runs，并作为返回值交调用方；调用方可另存logs。现行workflow已通过同一公开执行服务组织日序与恢复，流程尝试和当前任务保存在data/state/workflow/journal.json。账务以SQLite提交为准。默认只读检查仅输出JSON，不自动写日志、证据或快照。需要持续重试的业务状态继续由账本job_runs/orders/operations保存，流程journal不另立执行账本。
+当前真实账本没有冻结计划/成交，因此补充新冻结元数据可在保留三账户及本金的前提下落地。若实现需要数据库结构变更，必须先备份、显式兼容迁移及隔离验收；不得删库重注资。未来遇到缺新必填证据的既有已冻结计划，明确维护待核，不能盘后补造规则/账户历史证据。
+数据命令1仍首次及每月最后一个交易日18:10后prepare-data；命令2仍每交易日18:10后data-sync。职责、日程、免费来源和缓存布局不变。实际待处理订单/持仓/权益代码通过已有参数传入；月末新池按pool(N,Kp)明确代码补D以前缺口，不提前取N行情。
+无需重下载已经完成的100股121日历史。若某个待处理证券/日期确实缺数据，只按现有命令补缺，取得时点真实记录。特殊状态没有来源证据时全量重下OHLC也不能证明，保持未知。
+既有执行依赖DX01—DX03/LX01—LX05共8项、规则登记及完整撮合器已验收；ledger-query --kind execution --plan-id完全只读。其核心建设的历史范围无需迁移；本次SL01—SL04及SL-C01—SL-C20全部验收，正式生产已先备份再2→3，该次迁移时原19表逐行逻辑摘要一致、市场SHA不变。两组依赖各有范围，不能混作同一清单；SD01/SM01/SX01/SI01既有验收继续有效。行情已至10月30日，11月2日生效新池已完成第三步显式命令2补缺，采集/事实覆盖COMPLETE；正式计划与目标日成交/日结的实际结果见唯一当前入口。
+
+十三、完整验收清单（T01—T30全部通过；逐项代码及测试证据见现行需求矩阵）
+
+编号  关联功能                 必须验证的行为
+T01  X01/X20/X22               纯接口无LLM/网络/数据库写入；注入服务和受控时钟只能在隔离环境
+T02  X02/X22                   目标日规则/费用生效边界、知悉时点、未知/重叠政策、冻结后配置变化
+T03  X03/X15                   D/N/Kp/Ke区分；盘前不得要求N bar；09:00/18:10等号与时钟回退
+T04  X03/X05                   月末pool(N)与freeze(D)旧池区别，缺日历/来源损坏、上市121日边界
+T05  X04/X08                   错账户、代码/方向/重复、float/bool/NaN、矛盾数量字段、无理由空计划
+T06  X05/X12                   ST/退市/非主板/新股/出池，明确拒绝与未知分开；既有持仓退出分开
+T07  X07/X13                   含费预算一分钱、一手边界、最低佣金切换、显式数量不足不缩量
+T08  X06/X07                   1150零股、50比例不足、合法150/非法125；单笔100万上限与禁止拆单
+T09  X08/X19                   受限政策的五/六代码（旧全账户或新LLM；六意图中一个将SKIPPED仍拒绝）、双方向、合计超预算、整份无预留副作用、SKIPPED可追踪
+T10  X08/X09                   非空DTO验证→freeze→读取FrozenPlan→match→提交完整接口闭环
+T11  X09/X19                   旧账户输入+新expected_revision拒绝；自有预留不阻塞；单事务执行视图
+T12  X10/X14                   open等于/超过限价、high/low不可择优；全额单量守恒、零量/不足全日量
+T13  X11/X12                   开盘等于上下限四种方向；原限价越法定范围；连续竞价笼子不误用
+T14  X02/X11                   2026规则普通/ST适用、生效日、0.04低价tick、最低tick、9.995中间舍入分歧待核/已确认精度、非tick极低价未知
+T15  X11/X17                   除权原限价不自动复权、原股数量不增、前收缺失/冲突、上市股份次序
+T16  X12/X18                   已知无涨跌幅为MODEL_UNSUPPORTED而非缺数据；状态未知为等待
+T17  X13                       10元1000股/10.30全卖示例、每项舍入、无成交零费、费用总额逐分守恒
+T18  X14/X18                   三态quantity/price/fees精确null与0；协议错误不写未成交；原因最小证据
+T19  X14/X18                   最小停牌/开盘价/成交量否定证明独立成立；未知ST不遮住已证实限价失败，价格自身损坏/冲突不可绕过；只有close不能证明开盘失败
+T20  X15/X16                   关机多日只补原目标日、无计划/空计划、已终态不重撮合、五日任务不延期
+T21  X16                       WAITING批量首次/重放均PARTIAL；旧回执修订不倒退；逐单中断接续；子集COMPLETE不等于整计划完成，使用当前订单而非冻结原文状态
+T22  X16/X19                   冻结SELL→税→重读视图→BUY再计算；无进展退出不忙循环；未知/新增税负先守卫，卖款/红利/差额不扩张原预算，N+1财务不补N资源
+T23  X17/X19                   原批次变动、迟到权益、当日股份交付与已成交单混合，未知税负资源待核
+T24  X02/X03/X18               DX01特殊未知标记、DX02前日错误传播/休市原件依赖、DX03未来复杂不误阻卖
+T25  X02/X03/X18               新名称不回写历史资格，N+2未来公告不取消N买单；按股生成context/快照，覆盖CORRUPT不能被综合ready概括丢失；证据篡改/缺失
+T26  X20/X21                   CLI默认零副作用且不freeze、JSON/DTO同义、strategy_version/order_index/task_id字段映射、计算/提交回执分明、密钥不落盘、页面失败不重撮合
+T27  X09/X16/X23               两进程/过期修订、交易前中后强制中断、磁盘写失败，钱股费不能半入账
+T28  X23/X24                   数据真实实现的隔离缓存→执行器→完整LedgerService→日结/HTML/CSV；现行全量回归，既有断言保留
+T29  X05/X08/X18               盘前一股缺事实不暗删，已知排除可SKIPPED；盘后逐单守卫、确定拒单不被无关未知阻塞，同方向WAITING不阻独立单，账户间继续
+T30  X02/X22/X24               当前规则来源/生效日与代码配置一致；所有X/DX/LX逐项代码测试映射及文档同步
+
+验收采用隔离项目和实际MarketDataService/LedgerService公开实现，加受控市场夹具；不得把任意测试买卖写入三个真实账户，也不得为了执行层验收调用LLM或重下全部历史。现有全项目测试继续回归，但新增场景必须有独立有效断言，不能只改测试期待值掩盖错误。
+完整执行层通过标准：X01—X24全部实现并通过对应T01—T30，已完成的DX01—DX03、LX01—LX05继续回归；公共接口非空实际闭环通过，资金/股数/手续费/净值可对账；代码/依赖单向扫描、故障恢复和当前文档一致。最终真实时间前向周期仍属于整体策略/调度接通后的验收。
+
+十四、现行规则依据与项目假设
+
+核查日期2026-10-29。生产运行只读已维护规则，不在线解释网页，更不让LLM判交易规则。
+R01 上交所《交易规则（2026年修订）》及附件：2026-07-06生效；3.1.4交收约束，3.3节手数/价位/申报上限/涨跌幅/申报价范围，4.3节除权。附件3暂缓实施仅涉及列明的大宗交易条文，不应误把主板竞价规则列为未生效。
+https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml
+R02 深交所2026交易规则及修订说明，尤其主板风险警示幅度调整、3.3节数量/价格与4.4节除权。
+https://investor.szse.cn/lawrules/rule/trade/t20260424_620190.html
+https://docs.static.szse.cn/www/lawrules/rule/trade/current/W020260424690713155663.pdf
+https://docs.static.szse.cn/www/lawrules/rule/allrules/bussiness/W020260424690713346617.pdf
+R03 《印花税法》及2023年第39号减半公告，当前卖方税率按规则维护。
+https://fgk.chinatax.gov.cn/zcfgk/c100009/c5193058/content.html
+https://shanghai.chinatax.gov.cn/tax/zcfw/zcfgk/yhs/202308/t468451.html
+R04 中国结算2026-01-01更新的沪深收费表，普通A股过户费0.01‰双向。此前配置2022-04-29历史起始日未在本次重新取得原通知核验，不能声称本次覆盖所有历史费率；前向目标日适用当前已确认费率。
+https://www.chinaclear.cn/zdjs/fbzyls/202512/922adc26c2ff4865930c7fb77688bb8a/files/上海市场证券登记结算业务收费及代收税费一览表.pdf
+https://m.chinaclear.cn/zdjs/fbzyls/202512/a59388fbfa714c5fa546784891a42e30/files/深圳市场证券登记结算业务收费及代收税费一览表.pdf
+
+09:00/18:10、开盘价参考、全额单、零滑点、涨停拒买/跌停拒卖、同开盘不使用卖款、按冻结scope约束交易代码数（LLM五代码及旧全账户五代码）、上市121日、佣金假设、特殊无上限日不模拟及全日总量上限，均为本项目明确政策或模拟近似，不冒充法律额外限制、券商报价或真实成交承诺。
+
+十五、设计自检与当前记录
+
+2026-10-30完整实施及验收已完成：一次性交付全部X01—X24及T01—T30，不删减恢复、接口或验收。具体入口采用DefaultPlanValidator、DailyOpenMatcher及ExecutionEngine纯计算门面；execution/evidence.py仅组合注入的公开读取服务。外层application/execution.py提供读取/验证/撮合与显式freeze、settle提交恢复，复用同一计算器；这不是已启用的每日调度，也不代替权益/日结业务顺序。CLI execution-validate接收项目内策略意图JSON，execution-match按账户和冻结计划ID读取，均默认只读，--output仅显式保存报告。正式提交在Python应用接口中明确调用，不在检查命令添加隐式提交。受控时钟只允许隔离测试模式；真实项目不启用观察、不写测试交易。实现与验收基线见logs/execution-build-2026-10-30-baseline.json。任何设计/上游修正先更新本节与调整记录，再修改程序。
+实施契约细化：父调仓任务的ID结构与rebalance_task_id→task_id映射由验证器检查；存在、交易窗口、剩余目标在账本freeze_plan事务最终核验，验证成功不能代替冻结回执。FrozenPlan.document.content_hash是除document字段及只读查询附加的id字段外完整封存内容的摘要（id须与plan_id一致），纯撮合器可复算；应用还须读取该原件并核验路径/摘要/正文，不能只信DB内副本。单股来源损坏保留INTEGRITY_ERROR诊断及该单WAITING_DATA，不释放资源；全局输入/计划/视图摘要损坏作为流程错误，不制造交易终态。显式CLI输出限定reports/execution目录且原子替换报告，不能借输出路径覆盖配置、数据原件或账本。
+原件错误细化：封存文件缺失、JSON损坏及摘要不符统一返回INTEGRITY_ERROR，不把封存后证据损坏归责为新的策略输入错误；普通I/O权限或设备错误仍报告IO_ERROR。维护阻断改变验证报告时，按新报告内容重算validation_id，避免沿用VALID报告身份。
+盘前日历补查：previous_session(N)只能确定前一交易日，不能单独证明N本身开市。证据组装必须另查calendar(start=N,end=N,Kp)，验证唯一目标日确实开市；复用既有日历接口，无采集流程或历史范围变化。
+输入顺序细化：策略意图order_index必须与ordered_intents原位置一致（含HOLD），矛盾时拒绝，不擅自二次排序猜测策略。验证通过后才按固定SELL优先及同方向原顺序重编连续订单索引。执行步骤记录失败不回滚交易：返回独立STEP_RECORD_FAILED诊断；后续显式settle按当前订单状态仅补步骤回执，不重新撮合或重复记账。
+规则维护阻断细化：原政策自洽不代表已确证的法规错误可以继续使用。既有configs/execution_rules.toml增加execution_blocks（默认空）；每条须有block_id、受影响rule_ids、effective_from/effective_to、known_at、reason、source，可选codes限定证券。外层按真实当前知悉时点及原目标日检查，已知有效阻断不能通过传入更早Ke绕过。受影响新计划WAITING_VALIDATION，原未终态订单WAITING_DATA/RULE_POLICY_CONFLICT，保留原单和预留；其他证券可继续，已终态不重算。不自动从网页推断阻断、不自动换政策；明确维护后再恢复。此为执行层原有RULE_POLICY_CONFLICT路径的落地，不改变数据/账本接口；备份恢复已有的execution_rules文件同时保留此项。
+
+8项依赖及X01—X24已全部开发、自测、独立审查并验收。执行核心建设时1263项全项目测试及Ruff通过；SL开发前含SD01/SM01/SX01/SI01的1519项回归通过，本次SL最终回归另见当前状态。T01—T30逐项映射到实际测试节点，补充验证月末换池、佣金拐点、股份到账与FIFO、父任务期限、当前名称不反写历史、规则维护阻断及中断恢复。完整证据见logs/execution-build-2026-10-30-verification.json，现行矩阵见logs/execution-design-2026-10-29-requirements.json。
+
+流程细化仅在执行应用内：明确查询目标交易日、验证并显式封存，逐单提交后重读原计划视图，有进展继续、等待时退出；出错保留已提交回执，补跑不改原单、不重复钱股费用。规则维护冲突由明确登记阻断，步骤/报告失败独立恢复。日结、权益动作、下一计划生成及完整日常调度由application/workflow按docs/workflow-design.txt统一组织；执行层自身不承担调度。
+
+数据采集覆盖与用途统计只见docs/implementation-status.md及logs/project-current-state.json。执行消费继续要求目标日、规则上下文、原计划与证据绑定；数据READY不等于已封存或已经成交。
+
+十六、策略消费者支持（SX01已验收，SI01自动化通过、用户浏览器验收已完成，M01—M06及V01—V06均PASS，C5/C6/C8通过，SI01界面验收COMPLETE）
+
+SX01已完成：StrategyProposal、PlanEnvelope及FrozenPlan保存decision_ref，绑定decision_id、账户政策ID/摘要、算法摘要、decision_core path/hash及输入摘要。normalize_proposal、验证报告、封存及执行查询完整保留策略来源；原件/提案/数量绑定和递归归档已验收，详见第十七节。
+策略计算证据与执行资格证据分别命名、保存、归档，不用前者替代执行合法性检查。先封存无自引用的decision_core，Proposal引用它；验证/冻结回执之后单独关联decision_id，不能反写主体形成摘要循环。撮合仍只读原FrozenPlan，不重新运行策略、不依赖具体策略类。
+SI01执行CLI已从持久账户注册查询，不再固定choices；未知账户明确报错，默认账户缺失稳定回退并说明。纯撮合、费用、T+1及开盘限价规则不因账户数量/本金改变。
+本节与docs/strategy-design.txt一致；SX01所需现有计划记录/业务原件递归备份支持已经补齐，SL02/SL04权威政策登记、决策索引、迁移恢复已实现并验收，生产迁移完成。实际生产无计划，不补造历史决策。SX01-C1—C8消费者验收已通过；本轮策略消费者已完成含真实公开数据/账本/执行和日结HTML的隔离专项，SA21/SA24/SA25/SA27/SA29最终映射见docs/implementation-status.md；原SX验收范围不回写扩大。
+
+当前数据策略依赖SD01、模型SM01及执行SX01既有验收有效；10月30日1519项/Ruff属于当时结果。本次SL01—SL04代码已加入，其最终验收和生产迁移见docs/implementation-status.md。共享数量算法、撮合价格/费用及数据采集日程不变；三策略计算及独立应用已实现；整日流程已实现，WF验收已通过。
+
+十七、SX01完整实施契约（2026-10-30，开发前确认）
+
+一次完整实现策略决策证据在执行链中的传递、完整性核验与归档，不改选股逻辑、撮合价格/费用、命令1/2或账户数据库结构。下列条目先确认再开发，实施证据写入logs/execution-sx01-2026-10-30-verification.json。
+
+SX01-C1 公共契约：Proposal、Envelope、FrozenPlan增加provenance_mode（MANUAL或STRATEGY）及decision_ref。现有显式人工执行默认MANUAL，不具备策略决策审计；STRATEGY必须有完整引用，MANUAL不得携带引用或策略来源列表，禁止失败后自动降级。decision_ref固定包含decision_id、account_policy_id、account_policy_hash、strategy_implementation_hash、input_hash、decision_core={path,content_hash}。摘要须为64位小写SHA256，core路径限定data/plans/strategy/<content_hash>.json，不接受空对象、额外字段、越界路径或错配文件名。状态：已实现并验收。
+SX01-C2 决策原件：decision_core为schema_version=1、decision_id、account_policy、strategy_implementation_hash、input_bundle、proposal、calculation七个字段。account_policy含policy_id/account_id/strategy_id/strategy_version/effective_from/effective_to/known_at/parameters（base政策的effective_from可为null，effective_to为null表示无结束日）；验证账户/策略/目标日生效区间、已知时点及其摘要。proposal是规范化提案移除decision_ref后的内容（保留STRATEGY），不含core自身hash、验证结果或冻结回执；与实际提案逐字段绑定，避免循环摘要。input_bundle必须含与提案一致的market_snapshot_ids/data_evidence，其他策略输入可保留；input_hash是整个input_bundle摘要。calculation保存评分/理由等对象，不由执行层重新选股。所有财务/比例及模型参数中的非整数数值使用十进制字符串，遵循既有证据规范化约束。状态：已实现并验收。
+共用纯实现（2026-11-01 SL02）：validator/wire/planning evidence/execution_blocks已移至common/plan_validation.py、wire.py、planning_evidence.py、execution_controls.py唯一实现，原execution.validation/utils与application.execution_controls只转导出。ledger接受PROPOSED与execution验证共用同一纯校验，不反向导入执行或应用层、不形成循环依赖，原计算逻辑及公开入口保持。该提取随1642项全量回归与SL-C验收通过。
+SX01-C3 纯验证器：公开validate_plan增加可选关键字decision_core，STRATEGY缺原件返回WAITING_VALIDATION，结构/摘要/身份不符拒绝；纯计算器不读文件或服务。验证报告保留source_proposal、decision_ref、provenance_mode和策略来源；Envelope使用strategy_market_snapshot_ids/strategy_data_evidence保存策略输入，data_evidence继续专指执行资格。长窗口signal_prices、未下单候选和排除候选证据不得被覆盖；策略证据不能代替交易资格核验。状态：已实现并验收。
+SX01-C4 应用与账本：应用只读加载core并交验证器，严格JSON解析拒绝重复字段、浮点/非常数和不符摘要；封存事务再次读取同一原件，核对报告中的提案/摘要、账户/策略/目标日/参数引用，以及被接受订单和Envelope一致；数量/预算/卖出比例使用与验证器同一公共intent_quantity复算，accepted/skipped/HOLD必须完整覆盖原意图，空计划理由按原意图推导。策略来源按同一Kp通过公开数据接口复查（含signal_prices）并核对内容；来源缺失或篡改不可冻结。FrozenPlan及get_plan/execution_view/报告保留同一引用，真实资金仍由既有账本独立校验。状态：已实现并验收。
+SX01-C5 归档闭包：已补齐业务JSON原件内的递归依赖，账本备份由数据库引用继续向下核验。从core继续收集政策/模型/输入子文档及市场观测/快照，校验path/hash、visited去重并拒绝循环或冲突摘要；缺损原件返回非完整审计/备份，不伪装成功。恢复复制完整业务原件，市场索引仍按既有独立恢复契约处理。此支持不等于SL04动态账户/schema迁移。状态：已实现并验收。
+SX01-C6 重放与撮合：重复封存核验已冻结原件/决策引用，不能引用变更后策略参数重算；匹配/提交消费原FrozenPlan并可追溯原decision_ref，直接账本提交也在事务内复核原件，身份/正文缺损明确报错，不制造新计划或重复钱股。持仓、T+1、限价和费用算法不改；空/HOLD计划同样保留决策依据。状态：已实现并验收。
+SX01-C7 依赖边界：本项验证政策快照与原件/提案之间的内部一致性及生效区间；SL02已提供并验收权威账户政策登记查询、唯一decision_id索引、序列状态及原子生效互锁。新STRATEGY封存除SX01自洽核验外，还须核对SL02的权威政策、PROPOSED/input/revision/core/ref，计划与FROZEN同事务提交；不表示策略程序已经生成真实计划。后续ST发布强制STRATEGY并经SL02取权威原件，不允许MANUAL回退。数据层已有只读signal_prices/证据清单足够，只扩账本消费者允许列表，不修改数据算法或采集。状态：已实现并验收。
+SX01-C8 完整验收：独立公开DTO/纯验证器测试、真实隔离数据与账本链路、CLI只读、空计划、错误/篡改/重放、递归备份恢复、完整回归与逐项映射；不读取本机密钥、不调用真实LLM或行情、不写生产库。状态：已实现并验收。
+
+本节细化SX01职责，不把SL01—SL04或ST/AC实际建设混为完成。只有一套现行代码和方案，MANUAL/STRATEGY是明确的输入来源模式，不是程序版本。现行架构、策略附件、账本附件和矩阵已同步完成状态；数据日程/内部采集流程/历史数据不变，无须重下。
+
+SI01动态入口验收：执行匹配入口接受已登记账户，未知账户受控报错；命令与报告均不隐式开户、调用模型或采集。该组件日期验收logs/interface-si01-2026-10-30-verification.json；C1—C8及只读/导出契约见docs/interface-design.txt。
+
+完整工作流衔接（2026-11-01）：workflow只将目标日原冻结计划交给同一ExecutionApplication.settle；先通过LedgerWorkflow确认历史资格、应收及已到期股份，再执行原SELL/税/BUY，随后登记当天实际交易后的资格、到账税及日结。后知股数/现金不能扩张原数量或预算。内部提交后中断依经济业务状态恢复；无原计划只记录NO_PLAN，不历史重算策略。详见docs/workflow-design.txt，验收见唯一当前入口。
+
+十八、DAILY_SYMBOL_LIMIT_SCOPE_V1未来衔接（NL，2026-11-02，IMPLEMENTED_AND_AUTOMATED_ACCEPTED）
+
+本节源码、专项及统一全量已通过；三账户11月3日生效政策已显式登记，回执见logs/run-home-2026-11-02-policy-adoption.json及当前状态入口；统一映射strategy-design.txt的NL01—NL12，不改历史X/T/SX收据。现行执行配置新增daily_symbol_limit_scope="LLM_ONLY"；max_daily_symbols_per_account仍为5，表达LLM上限及旧包兼容值。旧冻结包缺scope按ALL_ACCOUNTS解释，但验证不能补写字段或改变canonical内容、ruleset_hash、rule_policy_hash、document摘要。未知scope拒绝。
+
+common.policies统一纯函数daily_symbol_limit(policy,strategy_id)：新LLM_ONLY仅对已验证身份S1/S1-LT返回无每日代码上限，LLM-Daily仍5；旧无scope包对所有账户仍5。PlanValidator在HOLD排除后、资格筛除前调用；freeze_plan在事务内按持久账户真实strategy_id独立检查；DailyOpenMatcher按原FrozenPlan.strategy_id与原rule_policy复验，不能用当前配置改旧条款。Proposal须与账户快照策略一致，冻结身份须与真实账户/原件绑定，不能把LLM伪装成S1获得豁免。
+
+仅解除新规则策略每日只数：目标数/持仓席位/同码单向/预留现金/整手与单笔股数上限/T+1/费用/限价/SELL→BUY/不预支卖款/09:00与18:10门槛均保持。父任务仍原五交易日窗口，新child不扩大原targets或预算。
+
+未来policy衔接权威入口与证据见ledger-design.txt第十八节。输入组装通过只读兼容验证，freeze事务再核对目标日policy、父任务contract、原窗口及真实剩余量。今日2026-11-02十二个冻结订单即使当前定义/配置/共享hash改变，仍按自身旧policy/core/plan验证和结算，不重算策略、不改价加单；新2026-11-03计划才使用明确追加的新policy。LLM算法及五只约束不变，但共享实现身份改变仍需显式采用。
+
+验收须包括超过五只的真实validate/freeze/match/settle规则闭环，LLM第六只各关拒绝，旧无scope包哈希逐值保持并可结算，以及策略伪造/原目标/衔接/时点篡改拒绝。专项、关联及统一最终全量/Ruff以本轮实际新记录为准，不把设计确认写成已验收完成。
+
+NL源码/专项证据见logs/nl-daily-limit-2026-11-02-requirements.json与logs/nl-daily-limit-2026-11-02-verification.json；当前状态IMPLEMENTED_AND_AUTOMATED_ACCEPTED，正式policy-set和生产重启不由隔离测试代替。
+
+本轮统一收尾口径（2026-11-02）：方案与源码仅此现行版本；NL01—NL12统一映射见logs/run-home-2026-11-02-requirements.json。三账户沿用原激活/注资，11月2日冻结计划和两个原父任务保持；11月3日未来政策已显式登记。政策变化属于未来生效，不冒充今天已执行新计划或已成交。原三户策略共享实现身份对齐，LLM参数/算法与最多五只要求保持。真实后台复跑的最新终态及证据统一见当前实施状态。
+
+十九、执行证据增长控制（SG现行契约）
+撮合、限价、费用/税、SELL→税→BUY、T+1及原单截止规则全部保持。新见证以frozen_plan_binding绑定原plan_id/hash/account/target/document，当前守卫与订单经济投影参与view_hash；旧last_attempt/result中的历史完整view不递归复制。账本提交仍核对见证、账户修订和当前资源；验证后的见证以CAS保存，展示使用result_summary/order_projection。WAITING_DATA同一语义输入复跑不制造层层嵌套，输入或实现变化才重新处理；真实缺数据不能改作未成交或成功。
+plans数据库是有界header，执行通过统一resolve_plan显式取回完整冻结合同、原资源及规则，任何索引/原件损坏均先拒绝且不产生金融变动。旧完整计划和旧view兼容；历史巨型行保存原始字节引用而不是删证据。日结引用当时订单/成交摘要及snapshot，后续订单状态变化不能反写旧账单。完整审计和旧结果原件仍能按引用还原；正常显示不展开全部历史。实现、隔离迁移与真实恢复分别验收，参见docs/storage-runtime-governance-design.txt及当前状态入口。

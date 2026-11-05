@@ -1,0 +1,15 @@
+schema_version = 1
+
+# Strategy refers to this name, not to a vendor SDK or a credential.
+[models.daily_planner]
+provider = "openai_compatible"
+model = "qwen3.8-flash"
+model_env = "CHINA_STOCK_SIM_LLM_MODEL"
+base_url_env = "CHINA_STOCK_SIM_LLM_BASE_URL"
+api_key_env = "CHINA_STOCK_SIM_LLM_API_KEY"
+timeout_seconds = 120
+max_output_tokens = 2048
+temperature = 0.0
+
+[models.daily_planner.options]
+enable_thinking = false

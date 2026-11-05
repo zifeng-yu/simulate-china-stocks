@@ -1,0 +1,194 @@
+完整调度与流程层（唯一现行架构实施附件）
+
+公开Git边界：云端发布是本机独立附加层，唯一实现位于src/china_stock_sim/publishing/。整个模块、configs/publishing*.toml（含模板）、deploy/web/全部材料、上传launcher及专用云端测试不随Git分发；文中这些路径和上传命令只适用于保有附加组件的本机环境。核心通过可选接口接入，缺该层不影响CLI、业务调度、本机首页/交易看板或菜单栏；公开克隆默认提供业务/首页两任务，本机原三任务继续保留。真实配置不改动，部署和运行实际结果只见当前状态与本机收据。
+
+本机关机提示的唯一契约见docs/evening-readiness-design.txt（ER01—ER12）。读取D最终连续账务、N合法冻结与财务写入边界，不以整个workflow返回COMPLETE或exit=0判断；report_plan/纯backup不是必要业务条件，但证明失效或财务锁忙仍非绿。原18:10、17—19避让、09截止和15分钟节奏不变，未新增业务编排、收盘采集或晨间依赖。
+
+
+现行上传按docs/publishing-schedule-design.txt的PS01—PS12使用上海09:00/21:00及最近已到时点去重；三任务分工和15分钟补检保持。2026-11-02的PS测试/安装/RunAtLoad证据保留在原日期日志，当前启用与维护状态见唯一状态入口。
+状态：COMPLETE。完整建设已于2026-11-01通过WF01—WF32验收；随后完成状态复审中的已FINAL账单迟到输入恢复补强也已完成，并通过本次全量验收。本文件细化docs/architecture.txt，不是另一套架构、程序或运行版本。 运行观测RO01—RO12已实现并完成本轮自动化及实际观测范围验收，契约见docs/runtime-observability-design.txt。logs/runtime-observability-2026-11-02-validation.json与同前缀runtime-live-sample.json分别记录测试与PASS_FOR_OBSERVED_SCOPE；采样时workflow仍在途、无END，不声称其业务完成。既往WF/RH/主题证据保留原范围。当前总体进度与最终回归只见docs/implementation-status.md；机器入口为logs/project-current-state.json。原WF建设2092项全量及91函数/136case逐项映射按发生时范围保留，不能代替后续修复验收。日期化验收、冻结原件和历史记录保持封口，不刷新其current_*。
+2026-11-02新增运行首页所需phase/进程身份及独立只读发布衔接，状态IMPLEMENTED_AND_AUTOMATED_ACCEPTED；仅扩展运行可观察性和静态发布，不改变上述已验收业务日序。完整新契约及RH01—RH24验收统一在docs/interface-design.txt，不能借原WF结果宣称新展示/后台功能通过。
+本次RO09已核验首页原任务归属和空闲状态，仅追加dashboard-refresh --scheduled更新原plist，安装回执为logs/runtime-observability-2026-11-02-monitor-install.json；实际三任务记录见同前缀runtime-live-sample.json。业务和上传参数不变，不另建任务、不为观测重跑业务或请求模型；既往三任务安装/主题维护事实保留原时点。
+
+一、范围与原则
+
+把现有数据、账本、策略、执行、报告及备份接成同一普通Python工作流，支持手工一次运行与macOS自动触发、关机补跑、局部失败恢复。复用公开服务，不直接写市场或账本SQL，不另建账本/行情库、不重复计算费用/税务/撮合/策略。调度只决定何时调用，账本仍是财务事实的唯一权威。
+正式使用不依赖聊天助手在线值守；只有已启用且具备输入的LLM账户规划可调用模型。来源/模型/磁盘问题保留确定状态，不把排错交给LLM，不猜数据或税基。历史无计划日绝不事后调用策略补造交易。
+2026-11-01建设与完成复审验收阶段未激活正式账户、未改原contract版base政策、未联网采集或请求真实模型，也未安装生产LaunchAgent，当时所有生产enabled开关为false。后续实际启用、未来政策绑定和观察起点是用户明确授权的独立操作，真实结果只见当前状态入口及发生时回执，不由inspect/run/init自动代办。
+
+二、公开入口、配置和权限边界
+
+workflow-inspect：只读当前配置、日历、注册账户、连续水位、workflow_status/revision_state必要投影、流程任务当前态及可执行步骤；不建目录/锁、不保存任务、不采集、不请求模型、不发布页面/备份或写账。缺日历明确WAITING_CALENDAR。
+只读检查还通过ledger.statement_input_changes发现已发布账单输入变化，不能因水位已到D且账单FINAL就遗漏迟到事实；inspect只给出受影响范围，不保存重述待办。
+workflow-run [--download] [--scheduled]：显式执行一次完整周期及恢复。无--download只复用缓存，但仍可能处理权益、结算、日结、模型规划、封存、页面和备份，因此不是只读检查。是否调用模型由已激活账户、当前合法政策和相应策略开关决定。
+--scheduled要求schedule.enabled且不在schedule.quiet_start=17:00至quiet_end=19:00避让窗口；手工run可显式运行，但不能绕过market.enabled、execution.enabled和各strategies.*.enabled。market关闭或未给--download时不得联网；确定性查询仍可复用缓存。独立命令1/2和现有策略/执行命令的职责及参数不变，工作流开关不改变它们的显式调用契约。
+生产入口使用真实Asia/Shanghai时钟，不提供--now/--as-of来选择过去规划；受控时钟与假来源/模型仅注入隔离测试。运行不开户、不改本金、不迁移、不自动改账户政策/激活；旧定义不匹配时展示CONFIG_CHANGED/FUTURE_POLICY_UPDATE_REQUIRED，不能以当前代码覆盖旧base。
+schedule约束：daily_start=18:10、plan_cutoff=09:00、awake_check_minutes=15、quiet_start=17:00、quiet_end=19:00；本轮增加max_sessions_per_run=20、max_run_seconds=3600、retry_minutes=15，须校验类型/范围，非布尔的enabled及非法组合不得悄悄放行。生产缺关键配置时给结构化诊断，不隐式采用另一工程配置。
+
+三、时点、日历与日序
+
+纯调度规划plan_schedule(now, calendar_rows, ...)返回completed_session D、planning_target N、planning_deadline、plan_allowed、month_end、last_completed_month_end、trading_sessions和issues。D必须是根据可信交易日历、其本地日期18:10已到的最近完成交易日；N必须是D的下一真实交易日。不得以周一至周五或自然月末猜交易日。
+周一08:00可以使用已完成的上周五D准备周一N；周一09:00及以后，在周一尚未18:10时不能补周一计划，也不能跳到周二而使用周五作为前一交易日。18:10以后才将当日纳入日终；节假日可以恢复欠账、重建报告和准备合法未来N，不生成虚假节假日日账。
+日历缺失先返回明确等待。只有显式run、允许采集且download时，才通过同一数据服务做有界日历引导，成功后重新规划D/N；不能因日历为空永远不尝试补日历，也不能先按猜测日期写业务账或调用模型。实际请求范围与引导结果留回执。
+每账户只从simulation_start_session开始记账。恢复起点综合连续settled_through/valued_through、restate_from/restate_through、未决原单目标日及已有账单；按实际交易日从早到晚处理，遇会影响后日股数/现金的未知仍保持后日暂估或等待，不跳过早日发布虚假最终账。
+每次采集和月末补缺之后，run通过公开refresh_statement_inputs重查截至D已发布账单保存的查询语义，并在其事务中确认变化、保存证据和重述范围，然后重新计算due日序。无下载也须检查缓存中新到事实。全部日结已经FINAL不免除此阶段；复查失败仅暂停该账户结算及规划，其他账户继续，不返回虚假的全部COMPLETE。原始成交与已冻结计划不被重算或改写。
+市场层已启用时，每个历史日的补采也必须在该日close之前再次以当前完成日D为上界复查，先持久化完整受影响范围，再更新当日账单。不能只在最初D采集后扫描一次，或先覆盖首个差异账单再扫描，导致后来取得的历史修订没有推动后续收益重述。
+单次max_sessions_per_run仅限制本次推进量，到上限保存待续位置；不得为抢最新计划略过旧账。处理到最近D且该账户D账务COMPLETE、估值FINAL、can_plan允许后，才考虑N新计划。
+
+四、数据准备与月末换池
+
+WorkflowData为流程适配器，只使用市场公开入口。inspect只读；collect/refresh_month_end即使download=false也可能保存来源任务，不能从只读inspect调用。ensure_calendar只在run的采集授权路径引导缺日历；所有来源请求仍受原预算、冷却和写锁约束。
+普通交易日先维护D日生效池及必要证券。需求合并D/N适用政策的窗口、候选、持仓、未决订单、未结权益及其明确历史范围。历史日/重述还要用公开positions(account,D)等补回已清仓但当日仍持有的证券；不能只看今天非零仓位。未知事件范围保留原因，不猜起点。
+每轮history_sessions=max(121,相关启用账户D/N政策所需窗口,本次明确窗口)，最大500；证券去重并按公开上限分批。pending_event_ranges原样传入，不能把旧权益起点误扩为行情历史窗口。数据层不反向读取账本猜证券，所有账户共用同一市场缓存。
+月末顺序固定：命令2维护D旧池与业务范围 → 命令1prepare-data(D)选池 → 读取N生效池并以显式代码再调用命令2补缺，as-of仍D。普通data-sync(D)的默认池是D池，不能拿旧池验收代替新池覆盖。命令1需检查内部PREPARATION_COMPLETE、price_ready和clues_downloaded，不能只看外层POOL_PREPARED或退出码0。
+选池发布失败保留原有效池与失败原因；新池已冻结/发布而历史或权益补缺未完成时，保持该池和原待办，按用途等待及按原请求/冷却续跑，不回退重选、不宣称完成。新池按既定下一交易日生效，D旧池身份始终保持。月末任务晚补保留真实fetched_at/available_at/处理时间，不能把后来采集伪装成当时已知，也不能因此重算过去无冻结计划的交易。
+任一来源局部失败不自动终止全部账户：按账户实际依赖和用途判断。采集COMPLETE不等于全部用途READY；真实历史金额冲突、未披露实施日期、未知税基继续按现有规则限制，不反复全量下载“消除”语义问题。命令1/2已有refresh/repair语义不被工作流隐式开启。
+
+五、单账户单日的固定账本顺序
+
+流程使用LedgerWorkflow.before_execution(account,day)、after_execution(account,day,orders_complete=True)、close(account,day)、missing_plan(account,day,reason)公开适配方法。适配器自身只调用账本/市场公共服务，每次业务写前重读真实account_revision，并绑定本次公开查询的不可变证据；不直接拼SQL或手算现金/税务。
+1. before_execution：仅为record_date<day的历史登记资格补登记；按真实有效日期确认已到期现金/股份应收，并在当日卖出前交付已经到股份上市日的股数。record_date==day的资格必须留到交易后；未来动作NOT_DUE不得提前确认或制造整账户故障。
+2. 执行：存在D盘前冻结计划才调用ExecutionApplication.settle。其内部SELL→税负守卫→BUY及每步重读保持；股份交付后的可卖量可以供已冻结允许数量使用，不能扩大原订单数量/预算。未知卖款/税负继续阻止相关买单，另一账户继续。
+3. 无计划：保存真实原因，不调用策略补D单；无计划/合法空计划都可继续持仓权益和日结。原冻结计划因行情晚到可晚结算，原限价、时点、顺序、输入/身份不可改，也不把未成交单顺延成后来新单。
+4. after_execution：仅在orders_complete=True时登记record_date<=day的资格，使用登记日交易后的历史批次；仍有目标日及更早原订单未决时不登记当天资格，返回TARGET_SESSION_ORDERS_UNRESOLVED。再确认应收、处理已到期现金/股份到账和税款。已APPLIED/NOT_APPLICABLE动作跳过；未来NOT_DUE不是失败，金额/日期/身份未知继续WAITING。现金分红到账不能扩大已冻结D买单预算。
+5. close：按账本公开close_session估值/对账，分别保存账务与估值状态及连续水位。迟到事实或修订按restate范围逐日追加账单修订，不删除原文。价格未知不填0，无依据的旧除权价格不能伪装FINAL。候选股的数据就绪不代表本账户存在应收/记账动作。
+输入复查的变化必须是账单消费的业务事实：相关权益条款/日期/状态/可信状态，或历史收盘估值等。相同事实换观测ID、原件审计引用、获取/可用时点，或coverage单纯扩大但完整性不变，均保持零账本写；普通无变化tick不得新增operation、重述任务、财务或报告修订。新查询证据保存实际知识截止，不回填成原账单已知。
+
+六、未来计划及策略恢复
+
+完成D后只处理合法N：now<N日09:00、D为N前一真实交易日、观察已启用、政策与当前实现匹配、账户can_plan及最终净资产满足时调用同一StrategyApplication.publish/recover。不得另写模型/规则流程。已FROZEN直接返回原计划；PROPOSED只封存原提案；RECEIVED/SUCCEEDED恢复原响应，不重问。
+账户旧订单/权益/未知税或待重述账单影响余额时，该账户不发布依赖未知资金的新计划；其他账户独立继续。模型不可用、配置变化、STALE_INPUT、MODEL_FAILED等按既有终态保存，不以规则选股替代LLM，不以空成功掩盖失败。
+两次模型尝试共享首次占位起算的默认120秒硬时限及08:59:50上界，工作流重启/15分钟tick不重置计数。总工作预算不足以开始新步骤时不调用策略；已开始的有界模型调用按其既有硬截止完成，不能为工作流超预算中止后再次重问。
+规则父任务按已冻结排名/目标/实际成交数量和原五个真实交易日续办；过期不延长、不补历史子计划。月末与进行中任务冲突沿策略现有MONTH_END_COALESCED处理，调度不能另建或暗改父目标。
+
+七、持久恢复、锁与错误隔离
+
+手工和自动workflow共用scheduler/workspace.writer_lock，外层覆盖一次流程；默认不重入，只有Journal内部显式reentrant=True协作复用同线程持锁上下文；同线程独立CLI仍拒绝，跨线程/进程仍排他。第二进程明确ALREADY_RUNNING，不抢占、不重占模型次数。持锁进程退出后OS释放锁，不依赖永久PID文件。市场与账本原内部锁、短事务保留；不能跨网络请求持SQLite事务。
+WorkflowJournal只负责流程审计和当前任务投影：read只读；start/step/finish、get_task/save_task保存run_id、attempt、当前状态、result及next_retry_at。保存到项目data/state/workflow/journal.json；原运行尝试追加保留，遗留RUNNING可标INTERRUPTED，不能把中断记成功。原子文件发布失败保留原文件，损坏须明确诊断，不能重建“已成交”事实。
+运行首页扩展契约（RH07/RH08，程序和自动化验证完成）：新run保存PID和进程出生身份；阶段以结构化phase保存标识、业务日/目标日/账户、开始/结束、状态和有界结果，在实际工作前记录开始。旧schema1及缺phase记录仍可读，不追造缺失字段。业务恢复可按原契约追加中断审计；只读监控只能根据匹配的进程身份将明确死亡的RUNNING投影为中断，不能写journal、解锁或启动恢复。仅PID存在不算活着，缺出生身份或无法查询时为未知。
+账本operations和经济业务行是提交权威。workflow_status/revision_state提供有界水位和待办，单目标get_plan/get_strategy_decision及必要模型/父任务投影提供恢复证据；不能只用pending_work判断是否应再次请求模型。账本job_runs历史RUNNING/FAILED行仅用于审计，恢复按权威业务状态与流程任务当前态，不能让旧未终态历史行引起永久重复运行。
+阶段结果区分COMPLETE、WAITING、FAILED、INTERRUPTED、SKIPPED；顶层状态不能把局部失败、报告失败或PARTIAL备份合成成功。未知来源/数据等待与程序错误分别留结构化原因；同一未变化等待不每15分钟反复写一份相同账单、重新调用模型或无限增加报表修订。
+源请求继续遵守原next_retry_at/Retry-After；流程冷却不能提前重试源，也不能靠等待把未完成任务当完成。常规临时失败留next_retry_at，下一tick重试；确定配置/维护问题留原因，避免忙循环。每账户失败捕获并继续其他账户；全局日历/锁/数据库完整性问题停止依赖阶段，不继续猜测。
+
+运行观测补充（RO01—RO12）
+workflow-run、dashboard-refresh、dashboard-sync在加载各自任务配置前建立invocation_id，统一task为workflow/homepage/upload；logs/runtime/YYYY-MM-DD/<invocation_id>.jsonl按上海日期/调用追加START、必要EVENT及END，成功、失败、禁用、忙碌、冷却和最近已到时点去重空操作均记录。原journal继续负责恢复与任务投影，JSONL关联run_id、账户、交易日、可得decision_id及publication引用，不复制金融原件、不成为记账权威。阶段记录单调耗时、CPU增量和进程终生峰值RSS，身份绑定源码摘要、依赖声明与脱敏配置；缺失字段unknown，不补造旧记录。
+记录器失败、损坏尾行或身份采样失败只形成安全错误与覆盖缺口，不改业务返回值、已提交账务、锁、资格或冷却。硬中断可能START无END，历史查询按PID及出生身份区分活动/中断/未知，不能伪造结束时点。Python启动、导入或参数解析失败可能无START，原stderr/launchd退出状态仍用于诊断；可空字段null是未知/不适用，不计为漏记。安全引用保留可得plan/backup/decision及上传target_id/release_id；记录资源与身份不改变原提交/重试结果。已有市场请求恢复投影保持原语义；只在有运行上下文时追加安全请求状态事件，不记录URL或响应正文。
+runtime-history [--date --task workflow/homepage/upload --invocation-id --run-id --account-id --decision-id --limit]有界只读；runtime-archive --date显式保存运行JSONL及引用身份/源码归档；runtime-archive-verify --archive只读校验，路径限定项目data/backups/runtime，原件保留。首页刷新后archive_due采用独立非阻塞锁，每次最多一个日期，限制扫描/归档字节；超限待手工，失败留续办。auto-state游标优先未建包日期，否则轮询已归档日期，每次仍只处理一个日期，防止旧日期积压饿死新日期。归档按日期+内容清单指纹去重，后来新增/跨午夜END追加新内容地址归档且保留旧件。运行明细30天/压缩归档180天按完整保护清单受控维护，活进程/未解决故障/金融与封口引用优先保护；原账本最近30份完整备份与此独立，同盘归档不等于全项目或异机灾备。完整契约见docs/runtime-observability-design.txt，本次自动化与真实观测范围已验收，来源为logs/runtime-observability-2026-11-02-validation.json及同前缀runtime-live-sample.json。
+
+八、预算、报告与备份
+
+max_run_seconds=3600是每轮60分钟软工作预算，不是运行到第3600秒强杀进程的定时器。新阶段以及权益处理、执行、日结等关键子步骤入口先检查剩余预算；执行在首次撮合前、每批账务提交前和提交后再次撮合前检查。采集传remaining与max_active_collection_seconds中的较小预算，已开始的模型调用仍按既有硬总截止收束。已开始的原子账本提交、页面发布或备份不被中途强杀，已成功提交的财务事实不因预算耗尽回滚或重做；单个已开始步骤可以越过软截止。耗尽后停止开启后续工作及报告/备份重核验，保存RUN_BUDGET_EXHAUSTED和待续状态，以轻量状态收尾，下一次调度按原冷却与权威业务状态继续。预算耗尽仍有待办时不能报告整体成功；max_sessions和时间预算都不能让流程跳过旧账。
+日结后先渲染今日账，即使随后LLM失败也应有账页；策略封存或确定失败后，再读取最新快照渲染计划/预留/原因。正常无变化tick比较report_revision和last_rendered_revision，不重复发布。renderer返回每账户实际捕获的rendered revision，成功后才record_step_result(report,SUCCEEDED,rendered_revision)确认；不能把渲染期间更晚的修订一并确认。发布确认自身不增report_revision。
+页面/CSV/审计写失败不回滚财务、不重做交易、不重问模型；保留最后完整页面及失败原因，重启仅补报告。部分账户审计损坏按已有AUDIT_UNAVAILABLE投影，不能伪造完整审计或清空其他账户。
+日常备份调用LedgerService.backup(label=daily)，按完成日+账务/报告修订指纹去重。只有manifest.COMPLETE记成功；复用前仍须调用只读verify_backup(backup_id)核验备份文件、摘要与归档配置/证据，已删或损坏不能因journal旧COMPLETE永久跳过，应重新备份；PARTIAL/失败留待重试并遵守冷却，不每15分钟制造无变化备份，不挤掉最后完整备份。同一事实的已APPLIED资格不因下一tick的cutoff改变重新登记、增财务/报表修订；真实来源条款或解释变化仍交账本校验并保留冲突。沿用最近30份完整成功日备份、迁移备份及递归证据/备份自身非密钥配置规则；不归档.env，不自动恢复覆盖生产库。
+备份可观察性扩展（RH11，程序和自动化验证完成）：进入账本快照/归档完整性预检前即记录备份预检RUNNING，成功核验后才记录复用/创建结果。长预检不是上一策略仍在计算，也不能因最后计划步骤COMPLETE把总run显示完成。独立首页采样不执行此完整校验，只读实际阶段；不改变备份完整性要求或金融去重规则。
+
+九、macOS自动调度与部署
+
+launchd status/render只读或显式生成配置，不安装、不创建或chmod启动入口；install/uninstall为独立显式维护。现行命名契约见deploy/launchd/README.txt的BN01—BN08：原业务plist的ProgramArguments首项为项目内deploy/launchd/bin/A股模拟-业务调度；该普通shell入口exec原.venv/bin/python，后续-m china_stock_sim --root ABS workflow-run --download --scheduled参数不变，cwd/日志仍位于同一项目。首页、上传分别使用同目录A股模拟-首页刷新、A股模拟-云端上传，仍三个任务，Label、环境与职责保持；触发按CW01—CW08统一为RunAtLoad及每小时00/15/30/45分日历，业务保留18:10，上传09:00/21:00由整点覆盖并按应用槽去重。install须校验受控路径、普通可执行文件、精确模板及原Python可执行性，未知plist/归属继续拒绝；只在对应任务空闲且原配置一致时迁移，不强杀业务或额外kickstart。schedule.enabled须显式开启，运行配置不因render自动启用；名称显示、正式安装及当前开关以本次独立BTM/UI/运行核验和状态入口为准。
+RunAtLoad只在任务被加载时安排一次执行，通常对应真正重启后的用户登录、重新登录或显式安装。三个原任务统一使用每小时00/15/30/45分的StartCalendarInterval，不再配置StartInterval；业务额外18:10，上传09:00/21:00由整点条目覆盖，不叠加重复事件。睡眠跨过至少一个日历时点时，唤醒后合并触发一次，只按当时持久状态检查，不排队回放错过的tick；短睡未跨刻度或仅解锁则不保证立即运行。同Label已有任务继续执行，不强杀、不并行另起；相邻唤醒/登录/日历仍可能先后检查，业务完成记录、锁和上传槽去重保持。next_check_at表示下一个计划日历时点，不再是查询时刻加15分钟；next_retry_at=19:00仍是应用允许恢复点，现行15分钟日历也实际包含19:00。完整契约见docs/workflow-design.txt的CW01—CW08。launchd日历基于主机时区，生产主机须与Asia/Shanghai一致，TZ环境变量不会改变系统日历时区；应用仍按上海时间及真实交易日历决定是否执行。未登录、关机和睡眠期间不执行，恢复时续办真实业务待办。
+自动触发与手工执行使用同一WorkflowApplication、journal和锁，不维护两套业务。无人值守不能弹交互确认、等待聊天消息或临时改源；预设恢复范围外保持明确失败并保留证据。
+真实launchd验收仅在独立临时项目root与随机label加载短任务，并在finally bootout/清理；不安装生产label、不改生产flags、不触发网络/模型。plist语法/实际子进程启动与物理重启/睡眠验收分开记录，不声称后两者已亲测。
+
+十、完整验收矩阵（WF01—WF32，逐项实现/测试见logs/workflow-implementation-2026-11-01-requirements.json）
+
+WF01  inspect零写/零网络/零模型；run与download、scheduled及各层enabled边界，不隐式开户/迁移/政策更新/激活。
+WF02  Asia/Shanghai、真实交易日历、18:10与09:00等号、周末/月末、周一盘前及盘后不得跳日规划。
+WF03  缺日历明确等待；允许下载时有界引导后重读D/N，禁weekday猜测、禁inspect调用会写任务的cache update。
+WF04  手工/自动共用锁，仅Journal显式协作同线程重入、独立CLI仍排他与真实跨进程排他，退出释放；第二进程不占模型次数或重复记账。
+WF05  journal遗留RUNNING中断恢复；以经济提交/水位/必要一致投影为权威，旧job_runs行不触发永久重跑。
+WF06  普通D增量只按现行命令2和共享缓存，来源局部失败不取消已就绪账户。
+WF07  候选/当前及历史持仓/挂单/未结权益去重、历史range和最大持续窗口正确，清仓未结事项继续维护。
+WF08  月末D旧池命令2→命令1内部完成判定→显式N池补缺；旧池D保持；选池发布失败保留原池，已冻结/发布新池但历史/权益补缺未完时保留该池与待办按用途等待，不回退重选或声称完成，不取N未来行情。
+WF09  跨月离线恢复月末任务，实际fetched/available/处理时点保留，后知新池不能制造过去策略。
+WF10  仅已激活注册账户在观察日起处理；旧contract政策只诊断，不擅自采用当前实现，多个账户/本金隔离。
+WF11  多日离线按旧到新恢复：仅结算既存原计划，无计划日留原因并日结；绝不历史调用模型/补父任务子单。
+WF12  真实送转股份已到上市日在sell前交付，合法可卖量及成本守卫正确；未来上市不提前交付。
+WF13  真实现金/股份除权应收按有效日确认，尚未到账不冒充现金/可卖股，不重复增加资产。
+WF14  真冻结单SELL→税负→BUY与原数量/预算/预留守卫，卖出未决或税未知不借后知资金，其他账户继续。
+WF15  登记日买入/卖出后资格使用真实收盘批次；record_date==D不在交易前登记，迟到旧登记事实可恢复。
+WF16  到期现金/股份及税款一次入账；NOT_DUE不算整账户失败，身份/税基/日期未知不猜，无权益账户不凭READY生造case。
+WF17  真实close/对账与COMPLETE/FINAL独立水位，缺价暂估、迟到事实restate连续修订、旧账单保留。
+WF18  原单缺数据后的补核保持目标日/证据/金额，重复settle无第二次钱股；无计划与合法空计划正确区别。
+WF19  D最终账与N盘前守卫，已有FROZEN直接返回；首次观察无D账只允许现行初始确认现金路径。
+WF20  LLM两次总次数/共用deadline、RECEIVED/SUCCEEDED恢复、配置/财务变化终态、模型失败不替换规则或影响S1。
+WF21  规则父任务实际成交续办、五交易日到期与月末合并，不重排/扩数量/借预期席位。
+WF22  单账户数据/模型/权益/配置失败局部隔离；全局完整性错误阻断依赖阶段，结果不伪报全完成。
+WF23  源与流程冷却/Retry-After持久化，未到时不联网，成功清理待办，确定错误不忙循环。
+WF24  20会话/3600秒阶段预算正确让出与下次顺序续跑，采集remaining上限，现事务/有界模型不被错误重做。
+WF25  日结后与规划后两次报告、实际rendered revision确认、并发新修订不误确认、无变化tick不无限刷新。
+WF26  报告/CSV/审计失败保留最后完整页、账本已提交事实；重启只补发布，不重问或重交易。
+WF27  日常备份按日/修订去重，只有COMPLETE成功，复用前verify_backup核验，被删/损坏重备，失败/PARTIAL冷却，最近完整备份/自身配置/递归证据保持。
+WF28  journal原子发布、损坏诊断与中断，不把日志作为财务判据；步骤错误安全脱敏与明确可恢复状态。
+WF29  launchd状态/渲染不安装，显式安装/移除校验路径/label/配置、默认生产disabled，手工自动同一入口。
+WF30  隔离root真实launchd短任务及清理、plist校验、跨进程锁；不扩大为真实睡眠/物理重启实测。
+WF31  CLI退出/JSON回执明确阶段与账户、待续/失败/空工作区分；报告/运行日志可核查，不输出凭据/专属URL。
+WF32  真实公共数据→权益/执行→日结→策略/封存→HTML→备份端到端及全量回归；生产双库/原件/政策/激活/命令1/2保护与新验收映射。
+
+独立tests/test_workflow_acceptance.py已消费真实MarketRepository/MarketDataService、LedgerService、ExecutionApplication、StrategyApplication、公开报告及备份，全部在临时项目。只控制时钟、网络提供者和模型响应，不能仅用mock验证调用顺序。独立权益/恢复测试与application/data/scheduler/CLI专项共同覆盖三账户完整闭环、离线跨日无历史重计划、月末新池、真实现金分红与送转、登记日买卖资格、局部失败、恢复幂等、报告/备份失败和冷却。WF01—WF32已逐项映射实际测试节点和最终JUnit，真实launchd另列发生时运行证据。
+
+十一、已确认依赖及本轮实施边界
+
+已有：市场采集/查询、日历/池/事件动作事实、连续历史与冷却；账本权益/税、执行提交、close、pending_work/required_market_inputs/report_snapshot、步骤确认与备份；三策略publish/recover；renderer公开published修订。均复用，不按功能重造另一套算法。
+本轮必要数据依赖小修：ledger.verify_backup提供只读完整性核验，不恢复、不建目录、不用当前配置补备份。scheduler的summary仅供轻量展示，最多50个近期任务，不取代完整journal或账本待办。market/update.py把首次失败已计算的next_retry_at及存在时的server_retry_at公开在job.issues回执，供流程遵守原deadline；原重试计数、退避算法、Retry-After和事实数据不变。
+本轮新增：流程日序与阶段编排、LedgerWorkflow权益适配、WorkflowData数据适配、纯日程规划、耐久journal、共用锁重入、CLI/配置/启动说明、launchd显式维护及完整端到端矩阵。实现若发现公开契约正常路径缺口，先更新本附件对应条目再做最小修正；不得用文档宣称未实现恢复已通过。
+本轮已同步README、AGENTS、架构及分层附件、唯一当前入口和报告提示；机器派生状态按本次最终收据更新。本轮日期验收保留实际测试/运行时间与摘要快照，不刷新既往封口记录。实际生产开启和首个真实时间周期另有明确授权与回执，开发完成不等于已开始前向交易。
+
+本轮证据导航：logs/workflow-implementation-2026-11-01-pytest.xml及-pytest.txt为最终回归，-ruff.txt为静态检查，-requirements.json为32项映射，-launchd-verification.json和-recovery-audit.json区分真实隔离触发及后验展示增补，-final-acceptance.json为本轮封口；最终数字和运行状态只见docs/implementation-status.md，不从旧策略测试推断新功能完成。
+
+十二、完成状态复审补强验收（2026-11-01，已通过）
+
+本次仅补充原WF17/WF22/WF32中的迟到输入正常恢复，不另立整日流程。已全部FINAL后新增迟到现金权益须被发现，并按历史资格和有效日一次补记；历史收盘价修订须按旧到新追加账单修订。历史补采在首次扫描后才取得变化时，也须于该日close前持久完整重述范围，确保后续账单收益更新。旧成交、计划、历史账单和冻结输入保持。纯读inspect不能写账；显式refresh必须在事务内重验，财务修订冲突、原证据缺失/损坏或查询失败不能接受调用方结论。已有重述范围覆盖或事实完全相同须零写；相同事实新观测及coverage扩展不能每tick重述。一个账户检查失败不应阻止其他账户，受影响账户不发布未来计划。上述边界及默认20日预算后跨进程续跑、执行禁用零财务写入，已由tests/test_project_completion_audit.py与tests/test_project_completion_isolation.py验证；最终实现/测试结果记录于project-completion-audit-2026-11-01新审计，原WF日期记录继续封口。
+
+十三、运行首页与静态发布衔接（2026-11-02，IMPLEMENTED_AND_AUTOMATED_ACCEPTED）
+
+当前实现入口：`dashboard-status/refresh/service-status/render/install/uninstall`独立管理首页；`dashboard-export/sync/sync-status/sync-render/sync-install/sync-uninstall`由publishing层独立管理展示包及上传。首页刷新与上传均不调用workflow，不占业务writer_lock，不启动模型。上传现行日程为上海09:00/21:00应用槽及登录/每小时00/15/30/45分日历补检，按目标+最近已到时点去重；跨多次遗漏只补恢复时最新一次，凌晨可补前日21槽，详见PS方案。未配置真实目标时不能安装上传任务。Ubuntu静态服务器此前已部署并完成首次真实上传和Safari远程验收；这些单09阶段回执保留历史。2026-11-02仅上传项完成双时点重装与实际RunAtLoad核验，属于当时事实；现行三任务日历配置按CW01—CW08，不能借旧安装与空操作作为本次通过；完整范围见当前入口。本轮不在本机搭建云环境。
+
+新结构化phase保存15种阶段：calendar/data/month_end/input_review/recovery/settlement/entitlements_before/execution/entitlements_after/close/report_daily/plan/report_plan/backup。阶段开始先于完整预检，结果后追加终态；report_daily与report_plan分别保留复用结果，账户ID不通过拼接字符串反向拆分。PID+出生身份只用于只读判断，旧journal缺字段保持未知。业务顺序、预算、锁、原冻结计划及去重规则保持。
+
+本层只为RH01—RH24提供真实phase、进程身份和公开轻量状态，不替代既有完整inspect或账务恢复。首页把今日自然日、D、N、实际补办业务日及每账户状态分别投影；当日18:10前日终步骤待时，旧D完成不能刷绿今日；09:00后已FROZEN仍完成，缺失计划不得补造。日历/数据损坏必须未知，单户故障仍隔离，月末已发布新池的补缺等待不回退重选。正常复验/复用完成与本轮进程是否结束分开显示。
+dashboard-refresh是业务只读的独立入口，写展示输出及RO运行记录，刷新后仅做有界运行资料归档：通过账本有界公共监控字段、日历和journal读取状态，不运行workflow-inspect、完整report_snapshot/audit、策略、模型、采集、报告发布确认或备份预检。它不持workspace.writer_lock、不等待长业务run结束，独立发布互斥只保护展示文件。原command1/2、策略实现依赖、已有政策/冻结计划和财务数据不变，不为看板重下数据。
+本机monitor使用独立LaunchAgent，RunAtLoad及每小时00/15/30/45分日历调用一次轻量刷新，无常驻高频loop/HTTP监听。浏览器可每60秒重载静态页，源采样超过30分钟标本机更新滞后；不把浏览器时间改成业务采样时间。原交易LaunchAgent仍按现有日程执行workflow，两个任务状态分别展示；monitor成功不等于交易成功。
+可配置的云发布由独立publishing层组织。每日Asia/Shanghai 09:00、21:00，不限交易日；以目标+最近已到时点去重。连续错过多个时点，只按恢复时最近已到时点上传最新展示状态一次，不排队补历史。00:00—08:59最近时点是前日21:00，允许补该时点；09:00、21:00整点已到。首次无成功记录也按最近时点执行；同槽成功不重复，09槽成功不能吞掉21槽。只读兼容旧schema1：日期型scheduled_for/last_success_date映射该日09:00，原件不改；新成功写last_success_slot，last_success_date仍为实际published_at的上海自然日。未完成最近时点时next_due_at为该已到时点，成功后指向下一个时点。兼容历史示例：当时11月2日14:32成功仅满足该日09槽，只读下一期限转为当日21:00，不因此重新上传或提前记21成功；这不是当前发布状态。一个调用固定开始采样时的slot，跨09/21边界传输不把旧包当作新时点完成；有效冷却跨时点/跨日仍生效，恢复后只处理届时最新时点。时钟回退不能用较早包覆盖较新成功。远端切换后本机提交前中断，只能验证目标、时点、摘要及文件后恢复同一时点成功，不能把09旧包提升为21成功。Ubuntu仍仅两页与必要展示数据，不包含业务程序、数据库、密钥、完整审计或额外审计页。完整staging/release校验后原子切换current，失败保旧。新清单scheduled_for必须是published_at对应的规范秒级上海时点；纯导出可为null。云页按next_due_at显示待补/下一时点，不用本机30分钟门槛；旧云页面在下次正常上传更新。dashboard-sync --republish仅供显式手工维护，与--scheduled互斥，不加入自动任务。按最近已到时点允许同槽重发；该槽未成功时按普通首次同步条件执行。凌晨维护属于前日21槽，不再受单日09:00等待门槛限制；仍遵守启用/配置、冷却、发布锁、时间与完整性校验，不清空成功事实、不提前消费下一时点，失败保留上一完整包。
+此前run-home建设阶段的生产维护曾先等原业务结束、卸载交易自动任务后修改；隔离验收完成再恢复原任务并安装独立monitor，实际触发结果、无重复金融/模型和保留证据需另验收。新增的RH矩阵只记录本次发生时事实，原WF/生产启动收据保持封口；最终实施状态由唯一当前入口统一收口。
+
+以下“本轮验证与范围”记录2026-11-02此前run-home本机建设封口阶段，保留当时服务器未提供及file预览受阻事实；后续实际云部署单独记录，不改写原收据。
+
+
+十四、交易页主题维护与三个独立任务（DS，2026-11-02）
+原业务workflow、首页monitor及cloud_upload共三项必要LaunchAgent，使用同一项目解释器及不同命令/label。三项均使用RunAtLoad及每小时00/15/30/45分日历；workflow额外18:10负责整日业务，monitor只读采样首页且不等待长业务，上传只处理两页静态包并按最近已到09:00/21:00时点去重。三项均无KeepAlive，执行结束退出；同Label任务在途不并行，loaded不等于正在运行。2026-11-02的14:24只读核验及后来上传双时点重装属于当时事实，见logs/dashboard-style-2026-11-02-task-audit.json与PS历史核验；现行日历和安装范围按CW01—CW08及唯一状态入口，不由旧进程数量推断现状。另有菜单栏只读显示进程，独立于原三任务。
+主题维护以纯、幂等apply_ledger_theme处理已有交易HTML，统一首页蓝灰配色、字体、卡片及导航；不执行workflow、report查询或账务重生，原report-data、金额、订单/成交、生成时间及CSV/完整审计保持。实际部署通过publishing显式动作，与业务流程独立。
+dashboard-sync --republish仅供显式手工维护，与--scheduled互斥，不加入自动任务。按最近已到时点允许同槽重发；该槽未成功时按普通首次同步条件执行。凌晨维护属于前日21槽，不再受单日09:00等待门槛限制；仍遵守启用/配置、冷却、发布锁、时间与完整性校验，不清空成功事实、不提前消费下一时点，失败保留上一完整包。仍执行完整摘要/依赖/权限核验及原子切换。以下是此前14:32主题维护的单09阶段实测：本轮已有交易HTML已用纯apply_ledger_theme实际升级，report-data、账户正文和CSV逐字保留，见logs/dashboard-style-2026-11-02-local-page-upgrade.json。2026-11-02T14:32:21.175479+08:00手工重新发布COMPLETE；随后普通scheduled调用changed=false，next_due仍为2026-11-03T09:00:00+08:00，分别见logs/dashboard-style-2026-11-02-republish.json和logs/dashboard-style-2026-11-02-scheduled-noop.json。HTTP核验PASS，五个预期入口200、四个禁止路径404，清单摘要匹配且本机/云端主题样式一致，见logs/dashboard-style-2026-11-02-http-verification.json。Chrome已实际核验新主题桌面截图，本轮新增浏览器验收仅覆盖桌面；账户正文与原交互脚本逐字节保持，既有手机尺寸和账户切换实测保留此前cloud-deploy记录范围，不声称此次重新实测。UI195项和重新发布74项相关测试分别通过，两组有重叠，不将计数直接相加；证据logs/dashboard-style-2026-11-02-ui-validation.json与logs/dashboard-style-2026-11-02-republish-validation.json。三个必要任务全部保留，未重装、未新增或取消任务。旧cloud-deploy/run-home封口事实保留。
+
+运行观测发生时结果（2026-11-02）：16:02采样三任务全部loaded/enabled/config匹配，首页和上传已结束0；15:41:43原业务自动启动仍RUNNING_RECORDING，无END和终态资源，不为验证强制结束或重复执行。16:00上传为当日成功空操作，changed=false，target_id/release_id已保存，next_due仍11月3日09:00。早先workflow/上传调用把正常null误计omitted，原记录保留；最终程序已修复，15:50首页及16:00上传为0 omitted，过滤查询READY不抹去完整历史的PARTIAL。该历史质量提示不同于业务失败；正常/异常END由隔离测试覆盖，不把在途业务写成已完成。首个手工运行归档COMPLETE/verify READY；后续归档因一个在途前缀为PARTIAL/verify PARTIAL，原件摘要未损坏，完整边界见同前缀runtime-live-sample和first/live-archive收据。本轮全量2452、最终受影响专项355通过，去重并集2490、Ruff通过；最终专项绑定235项源清单，前次全量时间与最后字节范围分开，见validation.json。
+
+PS实施边界：仅空闲且归属已核验的原上传任务曾暂卸载，state/日志保留；业务与首页未停止，不为上传执行workflow或模型。408项相关测试及Ruff通过后已恢复同label的双日历上传项，enabled/loaded/config匹配；实际RunAtLoad已独立核验通过。旧状态只读回读确认11月2日09槽满足、next_due当日21且state摘要不变，不能把只读回读当作真实调用已完成。证据使用publishing-twice-daily-2026-11-02前缀。
+
+十五、存储治理后的普通tick与恢复（SG现行契约）
+日序、09:00截止、18:10日终、15分钟触发、每轮20交易日/3600秒阶段预算及三账户隔离不变。普通tick按公开workflow_status/revision_state读取必要水位/日期/状态，不建立全历史report_snapshot。新重型阶段和结算关键子阶段均先过预算门禁；相同账户/日期/动作、财务修订、语义输入及实现身份的确定失败可复用失败状态，相关事实/修复变化才重试。网络错误仍遵守原冷却，不延长触发间隔来掩盖重复处理。
+WorkflowJournal当前索引采用storage_version2：小journal含current及近期任务，历史run/task存内容地址引用；read_current只供轻读，read显式取得历史。旧schema1读不写，首次明确业务journal写入先保留原字节再转换；损坏明确失败，不伪造历史结束。财务权威仍是账本，不用日志替代提交水位。
+备份指纹只读账户/报告revision，进入完整预检前记录RUNNING；已核验manifest及依赖未变化时复用证明，损坏/缺失则重备，不把PARTIAL当完成。只有COMPLETE计最近30个日恢复点。报告只渲染recent60+未决关联并确认实际report_revision，显式历史审计另取完整原件。
+首页刷新后仍在原首页任务内做有界archive_due及每日最多一次日志维护；protection_inventory增量核对封口JSON、文档及历史.evidence引用，缺完整声明/超预算则WAITING零删除，不扫描巨型金融库猜引用。日志维护不持业务writer_lock，不额外创建后台任务。源码/原件摘要解析、压缩归档和清理契约见运行观测及SG附件。
+正常无变化tick小于15分钟、数据齐备日终小于2小时是需实测的性能目标，不是外部网络保证；不因首页轻量化就宣称整轮已提速。正式切换、监督恢复和重装启用必须按实际收据确认，未完成历史计划不得越09:00补造。
+
+十六、维护后的原单恢复与未来实现采用
+存储/读取维护改变共享implementation_hash时，workflow不得静默重绑账户政策或把CONFIG_CHANGED当可忽略。先按原冻结合同监督恢复规则允许的旧订单/日结，再通过显式account-policy-set登记IMPLEMENTATION_MAINTENANCE未来政策；最终顺序与正式采用由操作收据确认，本附件不把隔离测试当生产写入。
+维护衔接只允许同策略implementation-2、同参数及四个已审查文件的非空实现差异，继承活动父任务须逐层验证完整政策链。原task_id、目标、截止、历史计划和动态成交进度均沿用，不复制任务、不补造已过09:00目标日计划。普通调度只消费已生效的权威政策，失败账户仍隔离，报告和备份仍按实际修订与完整证据核验。详情见strategy-design第十六节、ledger-design第二十节及logs/storage-governance-2026-11-03-policy-maintenance-validation.json。业务与首页现行每小时00/15/30/45分日历、业务18:10和云09:00/21:00应用槽按CW01—CW08保持。
+
+现行连续运行补充（CR，2026-11-03）
+自动业务在每日17:00（含）—19:00（不含）跳过触发，19:00后首次检查或开机RunAtLoad继续到期工作；18:10仍是当日数据可用与账务日期门槛，不因避让改成新交易日。跳过只记录运行观察，退出0，不更新业务完成、重试、账本或备份；首页刷新和09:00/21:00上传不受影响。人工维护workflow-run不带--scheduled仍可显式执行，所有原数据/账本时点守卫保持；17:00前已进入原子事务不强杀。本地/云首页说明避让及19:00恢复点，原18:10日历唤起可以正常SKIPPED，不另设进程。
+未实施普通预案的当日适用性由common/event_accounting_scope纯规则与账本共用，严格条件见存储运行方案CR02—03。观察预案不能让权益阶段虚报必须补资格；实施缺日期、未知/复杂/冲突和已记账关联仍保守等待。
+close在必要事实验证后，以经济/公开输入语义决定是否追加账单；普通同日同义返回ALREADY_APPLIED、零金融写。真实恢复游标推进一次但不复制同义账单。missing_plan以get_plan_header与no_plan_status目标范围查询复用原记录，不展开历史全报告。真实无计划日可以日结后继续未来规划，不补历史交易。coverage来源精确复用和受控备份身份重绑见storage-runtime-governance-design第22节；本轮实施与真实验收进度只见两个当前入口。
+
+
+二十五、日历触发与睡眠合并（CW01—CW08，2026-11-05现行方案）
+CW01 三个原LaunchAgent统一去除StartInterval，改用StartCalendarInterval。当前15分钟配置对应每小时00/15/30/45分；保留RunAtLoad、原Label、命令、日志、ThrottleInterval与enabled。业务额外18:10若已被周期覆盖则不重复注册；上传09:00/21:00已包含在整点日历条目，不再叠加两个重复事件。上传应用仍仅消费最近已到的09/21槽，其他刻度只是补检。
+CW02 macOS对睡眠期间错过的日历时点在唤醒后合并触发一次。程序只按实际启动时刻读取当前持久状态，不传历史tick、不逐次回放睡眠轮次。短睡眠未跨过定时时点、仅解锁且未睡眠，不保证立即运行；开机登录仍由RunAtLoad安排。唤醒补触发不是精确到秒的服务保证。时区采用主机日历；生产主机须与Asia/Shanghai一致，程序门槛仍使用上海时间。
+CW03 同Label已有进程运行时继续原轮，不中断、不并行启动第二份；现有业务writer_lock、首页锁、上传锁保留。相邻的唤醒/登录/正常日历可能形成先后检查，不承诺全局每次唤醒严格只有一个进程；正确性由持久完成状态、冻结身份、数据指纹及上传槽去重保障，不重复金融写入或重复上传已成功槽。未完成的真实业务待办仍按原规则续办，不因“不回放tick”而丢弃。
+CW04 保留17:00（含）—19:00（不含）业务避让、18:10数据门槛、下一交易日09:00冻结截止、60分钟阶段预算及各层冷却。19:00本身是现行15分钟日历刻度；若睡眠跨过该刻度，醒后合并检查；短睡无错过刻度则等下一刻。已完成计划不重规划，原三个账户/政策/成交/持仓/审计不变。
+CW05 统一纯日历辅助函数生成plist与next_check_at。保留awake_check_minutes现有1—60整数输入：从本地每日00:00按N分钟展开，午夜重新对齐，不能整除1440的值在午夜最后一段短于N；可整除60时压缩为Minute通配条目。额外每日时间按覆盖去重。next_check_at是清醒且服务可用时的下一个计划时点，不是承诺启动时间，也不再用查询时刻加15分钟。
+CW06 仅修改调度渲染与轻量时间投影，不改config.py、策略/账本/验证器身份。先留存被历史摘要绑定的原字节。安装前核验原plist归属与摘要、进程空闲、必要锁可用，再卸载并安装原三个Label的现行配置。不得强杀在途业务；首页旧plist用已核验原渲染完成严格卸载，不放宽未知文件保护。保留上传状态和全部金融事实；菜单栏显示进程、云端Nginx及静态包无需重装。
+CW07 必要验证一次：三plist无StartInterval、时间覆盖去重、next_check_at边界、可配置步长、现有锁/完成状态与上传最新槽去重回归；隔离真实launchd日历探针验证在途任务不并发及结束后不回放错过刻度。生产核验重装、loaded/enabled/file_matches、RunAtLoad实际结果。隔离时钟/探针不冒称物理睡眠实测；不主动让用户电脑睡眠。
+CW08 原位同步流程、发布、架构、界面与部署说明、README和两个当前入口，保存方案复核、测试、安装及逐项验收发生时回执。命令1/命令2及既有数据不变，无须重新下载；不复制一套旧方案或运行程序。历史封口记录保留原事实，不回写。
+
+历史实施、测试、安装及云端部署的发生时事实统一见 docs/architecture-change-log.md 的日期化证据索引；本附件只定义当前契约，不重复维护历史运行快照。

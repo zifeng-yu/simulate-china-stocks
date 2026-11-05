@@ -1,0 +1,7 @@
+# Explicit retention maintenance; no cleanup without a complete protection inventory.
+raw_days = 30
+archive_days = 180
+stdout_max_bytes = 10485760
+stdout_keep_files = 5
+max_scan_files = 100000
+max_scan_bytes = 536870912

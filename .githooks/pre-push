@@ -1,0 +1,11 @@
+#!/bin/sh
+set -eu
+PROJECT_ROOT=$(git rev-parse --show-toplevel)
+cd "$PROJECT_ROOT"
+PYTHON="$PROJECT_ROOT/.venv/bin/python"
+if [ ! -x "$PYTHON" ]; then
+    echo '密钥检查未运行：请先建立项目 .venv 环境，再推送。' >&2
+    exit 1
+fi
+# Git passes local/remote refs on stdin. Preserve stdin for the scanner.
+exec "$PYTHON" "$PROJECT_ROOT/scripts/check_secrets.py" --pre-push

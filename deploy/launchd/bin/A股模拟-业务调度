@@ -1,0 +1,5 @@
+#!/bin/sh
+set -eu
+launcher_dir=$(CDPATH= cd -P -- "$(/usr/bin/dirname -- "$0")" && pwd -P)
+project_root=$(CDPATH= cd -P -- "$launcher_dir/../../.." && pwd -P)
+exec "$project_root/.venv/bin/python" "$@"

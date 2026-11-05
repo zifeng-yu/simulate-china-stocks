@@ -1,0 +1,125 @@
+# 可替换模型连接层
+
+当前进度、真实数据截止、用途就绪与最新回归只在[实施状态](implementation-status.md)维护；机器读取[当前项目状态](../logs/project-current-state.json)。本文保留本层契约及明确日期的验收事实，日期日志不随当前状态刷新。
+
+当前按用户指定的阿里百炼 OpenAI 兼容服务建立模型连接层，默认模型名为 `qwen3.8-flash`。业务使用稳定引用 `daily_planner`；更换模型名或兼容服务时，优先调整配置，无需把服务细节写进选股与账本代码。
+
+全部配置和代码位于本仓库根目录 `simulate-china-stocks/`；本说明中的相对路径均以此为根。
+
+**模型配置、连接接口及SM01脱敏/公开审计支持已实现验收，LLM-Daily独立规划/发布/恢复已实现，本轮完整验收见当前入口；正式模型调用、冻结计划及目标日结果见唯一当前入口。** 一次模型测试回复不产生交易计划，不调用模拟撮合，也不改变账户现金或持仓。
+
+2026-10-28 已完成一次非敏感真实连接测试，`qwen3.8-flash` 返回预期测试结果。该结果不代表交易计划生成已验收，也不保证未来服务持续可用。
+
+## 文件职责
+
+| 文件 | 职责 |
+|---|---|
+| `src/china_stock_sim/models/base.py` | 与具体服务无关的请求/响应或客户端接口 |
+| `src/china_stock_sim/models/settings.py` | 读取模型引用、模型配置及本机连接参数 |
+| `src/china_stock_sim/models/factory.py` | 根据提供方配置选择适配器 |
+| `src/china_stock_sim/models/openai_compatible.py` | OpenAI 兼容服务的请求与响应适配 |
+| `configs/models.toml` | 可提交的模型引用、提供方类型、模型名及调用参数 |
+| `.env.example` | 环境变量格式示例，不含真实密钥 |
+| `.env` | 本机服务地址、密钥及可选模型名覆盖，不提交 Git |
+
+`models` 是策略层使用的通用连接组件，不另行承担行情采集、买卖判断、账本写入或日常调度。
+
+## 配置和优先级
+
+模型引用为 `daily_planner`，提供方适配类型为 `openai_compatible`，默认模型名为 `qwen3.8-flash`。`configs/models.toml` 通过环境变量名称引用服务地址和密钥，真实值只存本机。
+
+配置优先级是：
+
+1. 已设置的进程环境变量。
+2. 本仓库根目录 `.env` 的对应值。
+3. 可提交配置中的默认值，例如默认模型名。
+
+本机 `.env` 按 `KEY=VALUE` 读取，不是可执行脚本；不会运行其中的 shell 命令或命令替换。当前变量为：
+
+| 变量 | 用途 |
+|---|---|
+| `CHINA_STOCK_SIM_LLM_BASE_URL` | OpenAI 兼容 API 基础地址 |
+| `CHINA_STOCK_SIM_LLM_API_KEY` | 该服务的 API 密钥 |
+| `CHINA_STOCK_SIM_LLM_MODEL` | 可选模型名覆盖；未设置时使用配置默认值 |
+
+适配器会在基础地址后追加 `/chat/completions`，不要把该路径重复写入基础地址。远程服务使用 HTTPS；本机服务可使用本机 HTTP 地址，地址中不能嵌入凭据、查询参数或片段。缺少地址或密钥时应显示配置未就绪，不能自动请求其他服务。
+
+本机 `.env` 权限使用 `0600`，并由 `.gitignore` 排除。真实密钥、专属服务 URL 不写进 README、默认配置、测试或日志；输出诊断信息时只需要展示配置是否存在，不展示密钥内容。
+
+## 检查命令
+
+在仓库根目录执行：
+
+```sh
+./.venv/bin/china-stock-sim model-check
+```
+
+默认仅检查本机配置，不联网，不产生推理费用。`doctor` 也只报告模型配置状态，不调用模型。
+
+需要检查真实连接时显式执行：
+
+```sh
+./.venv/bin/china-stock-sim model-check --live
+```
+
+该命令只发送一次非敏感测试提示，不发送账户、持仓或行情数据，不自动重试。服务不可用、认证失败、模型不存在或返回格式不符时，应返回明确结果；不能把“已读取配置”当成“服务请求成功”。
+
+模型 API 依赖网络，推理调用可能计费，不能承诺免费。它不等于部署云端服务器：行情处理、计划保存、模拟执行、账本和看板仍在本机。项目“只使用免费数据渠道”的约束不变。
+
+## 更换模型或服务
+
+同一 OpenAI 兼容服务内更换模型：修改 `configs/models.toml` 中 `daily_planner` 对应的模型名，或设置本机模型名覆盖变量，再执行配置检查和一次连接检查。
+
+更换为另一 OpenAI 兼容服务：保留业务引用 `daily_planner` 和适配类型，在本机更新服务地址、密钥及目标模型名，再检查连接。兼容接口不保证每个模型都支持相同选项；当前配置带 `enable_thinking=false`，目标服务不支持时需移除这一可选参数。接入新服务仍需要实测。
+
+更换为不兼容此协议的服务：新增一个实现通用接口的适配器并调整提供方配置。不能只改 URL 就假定不同协议可以工作，也不应把供应商差异散落到策略、数据和账本模块。
+
+## 接入交易策略时的边界
+
+LLM 策略通过 `daily_planner` 获取结构化建议。股票资格、整手数量、现金、T+1、每日最多 5 个代码及截止时间均由普通程序检查；模型响应本身不是有效订单。
+
+模型不能修改账本、费用或交易规则。账本已提供按账户/目标交易日累计调用次数的占位、原始响应保存和恢复读取接口；实际计划生成、调用占位、固定输入纠错与恢复已由application/strategy接入。独立连接检查仍不等于交易策略实际运行。免费行情采集、确定性撮合、资金计算和页面生成都不依赖模型。
+
+本说明与本仓库现行架构 `docs/architecture.txt`、`configs/models.toml` 保持一致。替换模型连接方式不改变账户独立本金、前向时点或离线补算原则；其他目录中的历史模型方案不再作为当前配置依据。
+
+## 策略接入与调用边界
+
+[策略完整设计](strategy-design.txt)已明确20候选/持仓输入、严格JSON、可替换model_ref、每日最多两次持久尝试和总截止。适配器socket timeout仍只约束连接读取；strategies/llm_call使用可终止子进程保证调用硬截止并回收子进程。应用层两次尝试共享首次占位开始的总deadline，默认min(首次占位+120秒，目标日08:59:50)，恢复不重置；剩余不足1秒不再占位。输出上限已配置为2048 token。
+
+**SM01已完成并验收：** ModelAudit统一去除当前密钥、专属base_url/请求URL及主机名，覆盖响应正文、元数据、审计消息与状态输出。configuration/request/result明确构造公开字段白名单，返回独立快照；ModelSettings默认repr隐藏字段，禁止将整个配置序列化为审计。新增69项离线测试，全项目1347项及Ruff通过；未读取本机凭据、未请求真实服务。
+
+账户模型引用由不可变政策保存；本次SL03按白名单descriptor.uses_model替代LLM-Daily字面限制，仍按账户/目标日跨独立及关联路径累计最多两次。有decision的claim绑定PREPARED输入/政策/sequence；独立attempt不能随后混入策略prepare。响应先RECEIVED，关联SUCCEEDED随合法PROPOSED原子接受；财务revision变化只保存原响应和失效审计。旧schema2缺绑定attempt仅恢复finish，不套今天政策续请求。SL01—SL04及SL-C01—SL-C20已通过验收；模型连接/SM01既有验收继续有效，实际策略计算/调用编排已实现；整日调度与流程已实现，WF验收已通过。
+
+## LLM策略的程序逻辑和调整方式
+
+LLM只是决策流程中的判断组件。[策略附件第七节](strategy-design.txt)明确P1—P8：程序检查状态、筛选候选、计算指标与预算/席位、形成固定任务输入，模型给意图，程序核验依据字段与约束，再交执行验证器计算数量、费用并封存。每天不需要人工编写提示。
+
+支持分别调整程序、模型（含提示模板/生成参数），或同时调整。审计保留program_revision、请求model_ref/模型配置、prompt_revision及摘要、生成参数与账户政策，返回模型信息沿不可变响应引用核查；看板identity展示当时请求配置组合，历史冻结记录不被当前配置覆盖。更换连接或模型配置须按未来决策生效和进行中任务约束处理；已准备的模型配置变更结束为CONFIG_CHANGED，不拿新配置重问同日旧输入。
+
+## SM01 完整实施契约（开发前确认，2026-10-30）
+
+2026-10-30的SM01实施范围为已知私有值脱敏和公开审计输入输出；策略调用/纠错/硬总时限在本轮策略应用另行实现。账本已有每账户/目标日最多两次的尝试占位与响应持久化，按uses_model及PREPARED输入绑定的SL03已实现并验收；不设置自动任务、不改真实模型配置、不做真实推理。
+
+| 条目 | 已确认范围 | 状态 |
+|---|---|---|
+| SM01-C1 | 新增统一ModelAudit，按当前配置的API密钥、专属基础URL/请求URL及主机名脱敏；覆盖普通文本和JSON常见转义斜线，主机名大小写变化；不匹配陌生公开链接、不猜测未知密钥 | 已实现并验收 |
+| SM01-C2 | complete返回的text/model/finish_reason统一脱敏；业务消息若意外含当前私有值，使用相同方法脱敏后才构建HTTP正文；普通消息/交易JSON语义保持不变。真实地址和Authorization仅供HTTP连接/鉴权，不进入审计对象 | 已实现并验收 |
+| SM01-C3 | 公开configuration/request/result接口：只构造model_ref/provider/model、timeout、max_output_tokens、temperature、允许的options、json_mode，以及标准role/content与安全ModelResult；不对完整ModelSettings做asdict再删字段 | 已实现并验收 |
+| SM01-C4 | ModelSettings默认repr不展示字段；model_status/CLI诊断中的模型名也走统一脱敏，不泄露本机配置。只读状态不联网、不改文件 | 已实现并验收 |
+| SM01-C5 | HTTP/网络/格式错误继续使用固定安全信息，不输出响应体、请求头或底层异常文本；无内部重试、不跟随重定向、响应大小和输出token预算沿用原约束；配置拒绝URL控制字符与非法端口，底层HTTP异常也转为固定安全错误 | 已实现并验收 |
+| SM01-C6 | 审计配置和usage用白名单且独立复制；usage只保留非负整数token计数，不接受bool/额外字段；返回值修改不能影响原配置/原响应，非法输入给固定错误 | 已实现并验收 |
+| SM01-C7 | 虚构配置/假HTTP的独立消费者与适配器联调、完整回归、源码和文档逐项映射；无真实密钥读取、网络、LLM、账户/数据写入 | 已实现并验收 |
+
+公开接口定为`ModelAudit(settings).text(value)`、`.messages(messages)`、`.configuration(model_ref, max_output_tokens=None, json_mode=False)`、`.request(model_ref, messages, ...)`、`.result(model_result)`；request返回configuration及messages，result返回新的安全ModelResult，策略应用保存这些明确字段及其摘要。实际调用上限校验与适配器共用`validated_output_tokens`，不建立第二套尝试/重试规则。提示模板修订、耗时、attempt_id等属于应用调用方元数据，不由模型组件伪造。
+
+脱敏只针对当前配置中已知的私有字面值及普通JSON转义表示；不引入全网密钥识别、任意编码解密或复杂文本安全系统。原文在本项目审计中指脱敏后的模型文本。不改股票代码、价格、指标、公开模型名和无关普通网址；替换标记使用不破坏JSON字符串的固定文本。模型HTTP地址和鉴权实际仍使用当前配置，避免脱敏误改连接。
+
+本节已在开发前确认，SM01-C1—C7全部完成，逐项测试证据统一写入`logs/model-sm01-2026-10-30-verification.json`，对应当时策略需求矩阵已同步；日期记录封口后不再刷新。SD01已完成，SM01建设当时其余6项支持及策略/账户程序不纳入该次实施。命令1/2、历史数据、两个数据库结构及现有资金均不变。
+
+当前后续依赖状态：SD01/SM01/SX01/SI01既有验收有效，SL01—SL04已实现并验收，生产2→3迁移已完成；三策略计算及独立应用已实现，整体流程已实现，WF验收已通过。SM01-C1—C7及当时69项新增验收保留其实际日期，当前统一结果见[实施状态](implementation-status.md)。
+
+SI01既有动态账户/冻结身份/中文审计已验收，见[组件方案](interface-design.txt)及[浏览器证据](../logs/interface-si01-2026-10-30-browser-acceptance.json)。本次SL新增政策/决策API与CLI另行验收，不扩大原浏览器通过范围。
+
+策略实现身份由明确algorithm revision及真实源码摘要描述；每次决策另冻结账户政策、提示词修订/摘要、请求model_ref/模型配置和生成参数，并以不可变model_response引用保存返回模型名称、usage和finish_reason，共同构成完整可比身份。页面identity展示请求配置，返回名称按响应原件核查，不声称两者必然相同。模型配置变化即使源码摘要未变，同日恢复仍判CONFIG_CHANGED；历史core保持原身份，不假定远端服务部署可字节级复现。
+
+完整工作流通过同一StrategyApplication调用本组件，15分钟tick、重启和整日预算均不能重新获得两次尝试或首次占位总deadline。RECEIVED/SUCCEEDED/PROPOSED恢复使用原响应/输入；旧无盘前计划日不调用模型。只在已激活、合法政策及相应策略开关启用时请求；隔离WF验收使用受控响应，无真实模型请求。详见[workflow附件](workflow-design.txt)。

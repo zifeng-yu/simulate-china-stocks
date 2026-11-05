@@ -1,0 +1,299 @@
+策略层与可新增账户完整设计（唯一现行架构的实施附件）
+
+当前进度、真实数据截止、用途就绪与最新回归只在docs/implementation-status.md维护；机器读取logs/project-current-state.json。本文保留本层契约及明确日期的验收事实，日期日志不随当前状态刷新。
+制定/核查：2026-10-30；Asia/Shanghai；CNY；项目根目录：本仓库根目录（路径示例 /path/to/simulate-china-stocks）。
+总架构：docs/architecture.txt；执行契约：docs/execution-design.txt；账本契约：docs/ledger-design.txt；当前状态：docs/implementation-status.md。
+状态：ST01—ST30及AC01—AC08完整业务已实现，隔离闭环/恢复专项已通过；本轮全量与SA01—SA30最终验收已通过，准确结果只见docs/implementation-status.md。数据D01—D20及策略支持SD01已验收；模型支持SM01已实现并验收；执行支持SX01已实现并验收；账本/执行核心保持就绪，SL01—SL04共4项支持已于11月1日完成开发、自测及验收。现行读端与看板已支持动态登记账户，真实库仍只有原三个各5万元账户；原子开户已通过SL01验收，不能仅修改TOML或手改数据库冒充开户。
+2026-10-30策略依赖建设验收：已按SD01-C1—C6补齐公开Protocol、服务注解/说明和消费者测试，新增15项通过，当时全项目1278项及Ruff通过，见logs/data-sd01-2026-10-30-verification.json。未迁移数据库、未采集或调用模型、未生成真实计划；该次尚未运行策略及开户验收；随后SL开户/政策/决策支持另行通过；策略计算已在2026-11-01三策略建设中独立实现，未扩大原SD验收范围。模型SM01当时完成69项新增测试和1347项全项目回归及Ruff，验收入口为logs/model-sm01-2026-10-30-verification.json，范围详见docs/model-layer.md的C1—C7。SX01当时完成56项新增验收及1403项全项目测试/Ruff，记录为logs/execution-sx01-2026-10-30-verification.json，范围详见执行方案第十七节C1—C8。10月30日SI01完成116项新增验收及1519项全项目回归/Ruff，该次记录为logs/interface-si01-2026-10-30-verification.json。
+
+实施契约与依赖复核（2026-11-01，三策略开发任务）
+
+现有SD01、SL01—SL04、SM01、SX01、SI01接口满足本次建设，沿用真实公开接口，不新增业务数据库或整日调度。现行实现落实以下衔接边界：
+1. 已登记descriptor身份不冒充算法实现；内置策略定义升级为实际算法/提示模板/流程源文件摘要，原三账户base政策及本金不改。旧政策继续可查询、审计；首次使用新实现前经已有未来政策接口显式绑定当前修订，再显式启用观察，均不得由inspect/plan隐式执行。新开户按当前定义生成base。
+2. WAITING_VALIDATION保留原输入Kp与意图，只可恢复当时已可知但暂缺原件/证据的核验；后来available_at晚于Kp的新事实不能倒灌旧提案。需要新输入的等待仅限尚无模型占位/最终提案的准备状态。
+3. 每账户目标日的两次模型尝试共用首轮占位时开始的总deadline，恢复不能重新获得120秒；上限=min(首轮开始+账户timeout_seconds，N日09:00前10秒)。生产默认采用可终止子进程包装，超时清理进程；测试可注入有界假模型。模型配置max_output_tokens现为2048，响应与公开配置审计中的非整数数值转换为十进制字符串。
+4. 初建已评估由不可变决策计算结果/已保存父任务识别；完整空目标也只评估一次。父任务创建后崩溃恢复按原目标/真实五交易日窗口续办，不重新排名、扩大数量或延长时窗；同decision已存父任务视为固定输入，财务修订变化不能重准备该旧目标；到截止仍可保存MISSED_CUTOFF终态。
+5. can_plan=false、未观察或缺最终日报时返回明确账户等待/诊断；不得伪称账本已经接受PREPARED。策略自身不日结、不补采、不创建账户或激活观察；这些仍由既有显式接口及现行workflow流程组织。
+
+一、交付范围与职责
+
+同一次完整策略建设交付S1、S1-LT、LLM-Daily，以及新增账户、账户参数、策略身份和可解释审计的支持范围。未来增加策略只增加注册定义及实现，沿用同一数据/账本/执行契约；不引入远程插件下载、自动修改策略或模型自主运行工具。
+六个业务层不增加：策略负责特征、评分、选股、目标仓位和意图；application负责该策略步骤的读取、模型调用占位、持久化、验证/封存；模型组件负责请求模型及已知私有值脱敏/公开审计快照；数据层只供事实；账本唯一记账；执行层决定计划是否合法和能否模拟成交；展示读取现成结果。application/strategy负责策略步骤；整日workflow单独按docs/workflow-design.txt组织日序、恢复和调度，不复制策略算法。
+策略不自行下载、不直接读写市场私有SQL、不改账本金额、不自行实现撮合和税务。规则/费用沿用common纯函数及执行政策，不能另维护另一套收费或涨跌停算法。执行计算器不依赖具体策略类。
+当前不做盈利优化、机器自动回测选参、实时新闻、盘中决策、复杂风险模型、策略自动升级。审计分析用于解释和比较结果，不据此承诺盈利。
+
+二、完整功能清单（ST01—ST30、AC01—AC08已实现；本轮最终验收状态见唯一当前入口）
+
+ST01  三策略注册、统一输入输出、可替换实现及用途边界
+ST02  D/N/Kp因果、盘前截止、真实交易日历和账户观察起点
+ST03  市场输入组装、N生效池、默认/自定义历史窗及原始证据留存
+ST04  一致账户快照、D日最终净资产、现金/持仓/待办检查
+ST05  候选资格、缺失数据、出池持仓和已知排除的确定处理
+ST06  动量、样本波动、百分位、并列及确定性排序
+ST07  S1首次建仓、月末目标及平日持有
+ST08  S1-LT保留范围、席位、减仓和新增优先级
+ST09  目标差额、含费预算、整手/零股及规则策略限价
+ST10  五交易日父任务、触发冲突与到期处理；现行规则策略不设每日代码截断，旧冻结政策按原约束解释
+ST11  按实际成交续办子计划、现金/席位守卫及不重选股
+ST12  LLM程序前处理、20候选/指标/资源边界、固定任务模板及可核查依据
+ST13  LLM严格JSON、买卖语义、仓位/持仓数和理由校验
+ST14  模型占位、响应先持久、最多两次尝试及恢复
+ST15  模型总调用截止、失败隔离和临近09:00处理
+ST16  StrategyDecision/Proposal与验证器、封存的完整契约
+ST17  策略种类、算法修订、账户参数修订及快照绑定
+ST18  等待/空计划/模型失败/配置错误等结构化状态
+ST19  每账户规划锁、幂等、进程中断和过期输入处理
+ST20  非调仓日、零目标、零成交的日常记录与页面衔接
+ST21  不预支卖款、不预占卖出后席位及确定性资金分配
+ST22  从来源、特征、排名到意图/成交的完整审计链
+ST23  按账户/策略修订查询、对账、导出和人工归纳分析
+ST24  模型配置白名单、响应脱敏及无工具调用
+ST25  只读检查、显式规划/发布、审计命令与Python接口
+ST26  参数校验、规则修订变更和未完成任务边界
+ST27  多账户隔离、同策略不同配置及共享数据缓存
+ST28  与数据/模型/账本/执行/展示的消费者验收
+ST29  故障恢复、无网络/无LLM隔离验收及资金一致性
+ST30  逐项需求/代码/测试映射与全部现行记录同步
+
+AC01  持久账户注册、显式原子开户、唯一注资和幂等
+AC02  账户清单、展示名称、策略绑定及独立参数配置
+AC03  默认三账户保留、未来起算日及启用机制
+AC04  参数修订未来生效、原计划/父任务保留原配置
+AC05  CLI/配置/诊断移除三账户及固定本金硬编码
+AC06  看板按账户显示策略种类、算法/参数修订和真实资金
+AC07  注册信息、参数与决策证据的备份/恢复和显式迁移
+AC08  多账户查询/恢复/比较独立，不合并本金或互借资金
+
+三、账户与策略配置
+
+1. 三个现有账户保留，不重建、不重复注资。新的账户可使用同一种策略的不同参数，也可使用后来注册的新策略。已创建账户以账本注册为权威；配置文件仅声明默认种子账户和可用策略定义，不能因TOML增删一行就创建/删除账户或改变本金。
+2. 开户输入：account_id（稳定唯一标识）、display_name、initial_cash_fen（正整数分）、strategy_id、strategy_parameters、可选model_ref。币种固定CNY，仍为模拟账户；没有充值、提现、杠杆或真实券商交易。本金可不同，不再固定5万元；现有三账户本金不变。
+3. 新账户创建后先为未观察状态；simulation_start_session由已有activate_simulation显式设置，必须是已知、尚未到09:00的未来目标交易日。可选择创建后立即调用启用，但两步各有回执；失败不得伪称已启用。历史行情只作输入，不补造开户前交易。
+4. account_id、本金、币种、strategy_id创建后固定。比较另一策略或另一笔本金时另建账户；不在同一净值曲线中途换策略家族或改本金。display_name可修改并留审计，历史交易身份不变。不提供删除历史账户、清空重来功能。
+5. 账户策略参数保存为不可变account_policy记录，含policy_id、完整合并默认值、hash、created_at、effective_session及修改理由。初始base policy的effective_session=null，表示从未来首次观察起点适用；get_account_policy按N选择最新已生效有日期政策，无则用base，不补造历史。后续修改不覆盖旧记录，必须指定已知、尚未到09:00的未来交易日，且该日尚无决策尝试/冻结计划。普通参数修改在存在未终态订单或进行中父任务时拒绝，待其结清/到期后再设置；不暗中取消任务。仅本附件NL合同规定的显式未来衔接可保留严格早于生效日的旧订单及精确绑定的原父任务，其他守卫不放宽。
+6. strategy_version是注册定义中的明确算法实现修订；strategy_implementation_hash绑定当前明确源码清单的真实摘要。每次决策另冻account_policy_id/hash、prompt_revision/hash、请求model_ref/模型配置及生成参数，返回模型名称/usage/finish_reason由不可变model_response引用保留，共同形成可比较身份；不能把一个strategy_version字符串当作全部远端部署或模型参数。模型配置变化即使源码摘要不变，也会使同日未封存恢复成为CONFIG_CHANGED，不覆盖历史core。策略实例用account_id+strategy_id唯一识别。全项目只有一套当前程序，历史修订标识/参数快照是审计数据，不要求同时运行多套旧代码。
+7. 普通配置：展示名、本金、策略、启用日；策略配置：目标只数/权重、排序窗口、调仓参数、限价偏移、每日代码参数（新规则策略固定0表示无每日只数限制；LLM为1至5，默认5；旧定义按原范围解释）；LLM配置另含model_ref、候选数、目标持仓及仓位上限。账户不另设交易所法律、T+1、手数、税率、数据源或独立行情库。当前手续费仍使用统一已维护政策。
+8. 参数须经每种策略的schema校验，拒绝未知键、浮点金额、互相矛盾或超过已实现范围的值。当前支持的调仓节奏是首次+月末，父任务最多5交易日；不把任意字符串当作已实现的周频/盘中策略。默认评分窗口和算法见下文，调整窗口也必须保存其实际值及最低数据需求。
+
+默认值与可配置边界：
+S1：121日价格、跳过20日动量、60日日收益波动，两权重各0.5；target_count=10、target_weight=0.095；权重非负且和为1；目标只数为1至100整数，跳过日数为非负整数，价格数2<=L<=500且L>=skip+2，波动收益数V>=2且V+1<=L，目标总权重不超过1；候选不足可少持有。
+S1-LT：相同评分及窗口/权重校验；target_count=10、enter_rank=10、retain_rank=20、trim_trigger=0.12、trim_target=0.095；1<=target_count<=enter_rank<=retain_rank<=100，0<trim_target<=trim_trigger<=1且target_count×trim_target<=1，保留席位优先；不允许“保留前20”被解释成持有20只。
+规则策略：新定义max_daily_symbols=0且只接受0；历史定义defaults中该值为5时仍按原1至5校验，不重写旧政策。buy_limit_offset=0.01、sell_limit_offset=0.01，均为当前明确的模拟参数；买入限价向下取到0.01元，卖出限价向上取到0.01元。偏移允许0至0.10；不是额外交易所规则或保证成交的参数。
+LLM-Daily：max_daily_symbols=5（允许1至5，BUY/SELL合计，HOLD不计），max_candidates=20（最多20）、max_holdings=5、max_target_weight=0.20、max_total_target_weight=0.80；候选数为1至20整数、持仓数为1至100整数；各比率0至1且单只不高于总上限。模型输出上限已为2048 token；两次尝试共用首次占位起算的总时限，默认最多120秒，每账户/目标日最多2次尝试，不能通过换模型或参数重置。
+每种策略定义登记uses_model、所需历史窗口和支持参数。注册表为代码中的明确白名单；未来新增策略要实现同一接口并通过消费者验收，不从用户字符串任意import代码。
+
+四、输入与时间口径
+
+D为最近已完成行情日，N为紧接D的真实下一交易日，Kp为实际规划输入截止。读取D日18:10以后合格事实，在N日09:00前完成验证及封存。N日历须单独确认开市；不要求N行情已经存在，不用周一至周五猜日历。晚开机允许处理已有计划，不能生成已过截止的历史买卖。
+规划先读取现有冻结计划和决策：已有计划直接返回其身份，不再调用策略或LLM。此前有未决订单、未知资产/税负、待重述日报时按账本can_plan停止本账户；不影响其他账户。
+用一次report_snapshot(account,N)取得一致账户、全部模型/调仓记录和D日最终日报。正常仓位分母E取D日FINAL且会计COMPLETE的net_assets_fen；account_state本身没有净资产字段，不能用cash_fen替代。账户修订、日报修订/摘要必须进入输入。首次观察前无D日报时，只在无持仓/订单/权益的初始状态使用已确认本金/现金。E<=0禁止新增BUY；规则策略本次可记录有原因空计划；LLM只可在已确认真实持仓、可卖量与执行资格下SELL/HOLD，不强迫卖出。该口径消除共同输入段与LLM段的歧义，不改变已测实现。
+所有价格、收益和比率使用Decimal，内部固定精度34；金额按common费用方法到分，模型JSON金额用整数分，价格/比例用字符串。最终结果不靠浮点排序；序列按实际交易日对齐，未提供/损坏值不补0、不向前填未知行情。
+市场输入按同一D/N/Kp读取：pool(N,Kp)、calendar/previous_session/window、security、prices、events、event_coverage、readiness。S1默认读取rules的121个adjusted_close；LLM读取llm的21个adjusted_close，另查同期prices取得原始收盘价、成交量/额和状态。默认readiness的rules/llm窗口固定121/21，不能传自定义L；规则自定义窗口使用现有signal_prices(code,D,size=L,knowledge_cutoff=Kp)，其MarketDataReader公开Protocol声明及消费者契约验收已由SD01完成。外层每次采集持续传max(121,全部启用账户所需窗口)为DataRequest.history_sessions（命令2已有--history-sessions），只补缺口，最多500；不能只首次补长历史后又按121刷新覆盖。上市资格仍固定121交易日，不随信号窗口缩短。调整价只用于信号；仓位估值、限价和数量使用未复权价格。
+pool(N,Kp)必须单查留证，不能用freeze(D)内的pool(D)代替月末新池。候选、持仓、原父任务证券按用途合并后由外层传给数据命令；数据层不查询账户猜证券。新增账户共用缓存，只有确实新增证券/窗口才补缺。
+决策输入包保存每项公开查询参数、状态、原始issues、观测/快照ID及摘要。event_coverage的具体损坏/刷新不足原因必须保留，不能被readiness概括成一个缺字段后丢失。引用原件按公开清单归档，不解析市场私有索引。
+
+五、共同资格和评分
+
+新买入范围：N生效池内、允许的沪深主板、截至D满足上市窗口、D已确认非ST/非退市且无已知排除复杂事项；未知资格不得当正常。策略做选股范围过滤，最终合法性仍由完整验证器核验，不重复实现涨跌停/税务。
+候选非持仓缺历史/字段或来源冲突：记录UNAVAILABLE及原因，排除本次排名/LLM候选，不给0分，不伪装成确定低排名；有效候选不足目标只数时少持有、剩余资金留现金。全池无可评分者记录WAITING_INPUT；全部确定不符合或均买不起可形成有原因空计划。
+已有持仓在月末调仓仍需评分而输入未知时，该账户本次重新定目标等待，避免因缺数据被动卖出。已明确出池/不再允许新增买入的持仓可形成退出目标，不要求其重新通过新买入资格；退出仍须有足够真实价格/可卖股和执行证据。非调仓日不会因为排名变化自动交易。
+默认121个调整价格P[0]…P[120]，P[120]对应D；动量m=P[100]/P[0]−1，即P(D−20)/P(D−120)−1。最后61个价格产生60个日收益r，波动v=sqrt(sum((r−mean(r))^2)/59)，不年化。零波动是合法值，不做除以波动率的运算。
+在本次n个可评分候选中，动量百分位=(严格小于m的个数+0.5×(同值个数−1))/(n−1)；低波动百分位用严格大于v的个数代入同一式。n=1时两项均为0.5；n=0不排名。分数=0.5×动量百分位+0.5×低波动百分位。自定义权重按已校验参数替换；自定义L/skip/V时，动量=P[L−1−skip]/P[0]−1，波动取最后V+1个价格生成V个收益，分母V−1。
+最终先按综合分降序，同分按标准股票代码升序；rank从1连续编号。显示可四舍五入，但排序依据完整Decimal数值，不能用页面显示的两位小数重排。记录原指标、百分位、综合分、排名及并列规则。
+
+六、S1与S1-LT：评分到买卖计划
+
+触发：首次账户具备输入且没有完成过初建决策时，或D是月末最后交易日时建立目标；其余日只继续尚在窗口内的父任务，或给出NON_REBALANCE_DAY空计划。首次与月末同日只建一个任务。若月末遇正在进行的初建/调仓任务，优先继续原任务并记录MONTH_END_COALESCED，不重复建父任务或延长窗口。错过且未封存的月末决策不事后补造；等下一合法触发，首次建仓可在首次真正准备好时开始。
+S1：取前min(target_count,n)名，各以E×target_weight为目标金额；比较实际持仓，缺少/低于目标形成买入差额，退出目标的持仓形成卖出目标，超过目标形成减仓差额。目标金额不因候选不足重新均分。低于一个可交易单位的差额记录跳过，不为了打满仓位强买。
+S1-LT：先安排已明确不再符合保留范围的持仓退出；排名<=retain_rank的已有持仓优先保留并占席位。保留持仓不主动补到目标权重，只有D日权重>trim_trigger时减向trim_target。剩余目标席位按排名从尚未持有、rank<=enter_rank的股票填入，每只目标E×trim_target；已有第11至20名持仓不为新前10名让位。当前持仓超过配置目标只数时不新买，按正常退出/减仓处理，不任意强删保留仓。
+规则限价：基于每次子计划D日原始收盘价，买价=floor_tick(close×1.01)，卖价=ceil_tick(close×0.99)，最小为一个tick；偏移按账户参数替换。已封存日计划绝不改价；父任务下一日生成的是新的盘前子计划，可用新D重新形成限价，但不改父目标股票/方向/最大数量、不重新排名。
+目标数量：金额换算的新目标股数向下取100股整数倍；S1-LT原样保留仓位保持实际股数，例如105股不因整手规则自动减成100；退出目标为可退出的原持仓数量。新增买入以目标金额减当前持仓市值形成含费预算，再用共享费用函数求限价下最大可负担的整手数。卖出上限q=min(当前持仓−目标股数,实际可卖数,父目标剩余量,单笔上限)，非正则跳过。取不超过q的最大合法数量：100整数倍，或带全额可卖零股尾数的数量；尾数处理与现有验证器一致，记录原始差额及取整原因，不能卖超、拆单或自动丢零股。具体数量经验证器最终核验；显式quantity不合格不得在那里静默缩量。
+父任务保存trigger/D/N、完整排名/参数/输入引用、目标权重和参考金额、目标股票/方向/最大数量及五个实际交易日窗口；目标在创建后不可变。父任务成功创建即记录初建决策已完成；部分成交或到期不能次日重新触发初建，只能等待下次月末重评。空目标不调用save_rebalance_task，保存有原因空计划及初建/月末决策完成记录。初建已作出完整但买不起的空决策也视为本次初建已评估，后续月末再评估，不每天忙循环尝试。
+每晚根据父目标剩余量、实际持仓、当日已记账成交和确认现金选下一日子单；仅实际成交增加completed_quantities，未成交不算完成，可在原窗口内下一日重新计划。父任务窗口以自然经过的真实交易日计算，关机不延长；已有原日订单可晚结算，但不得在窗口外新增子单。
+选择顺序：退出卖出 → 超权重减仓 → 买入；同类按冻结排名再按代码。新S1/S1-LT取消每日五代码截断，同一代码仍只能一个方向/一笔逻辑单；按原排序处理全部合法目标，仍受资金、席位、原目标股数和来源限制，不保证单日或五日内全部买齐。旧冻结计划按自身原政策解释，LLM五代码上限保持；NL源码已实现并通过专项，统一最终回归和正式采用另见本节验收记录，不改写旧验收事实。
+买入只用当前确认可用现金；本批预期卖款不能参与预算。新股票席位也只按当前真实持仓计算，不假设同一开盘卖单一定成功。持有10只且计划替换时，先卖，实际释放席位/现金后再在下一日子计划买。按买入优先顺序分配剩余现金；不足一手的目标本日跳过并留原因，原目标仍受剩余窗口约束。
+每日买入股数同时不超过父目标剩余量、原目标金额减当前市值所允许的数量、可用现金和单笔上限；因此不会因价格下跌或到账红利无限扩张父目标。后续权益使股数变化不自动增加原父目标；以已确认可卖量守卫，无法满足时等待/报告到期未完成，不伪造完成量。已知资格变化可停止该目标的新买入并留原因，不替换为未冻结的新股票。
+
+七、LLM-Daily：数据到模型计划
+
+先从合格且21日信号和所需原始字段齐备的全池中，按最近20个交易日平均成交额降序、同值代码升序选最多20只，排名可含已有持仓；这是给模型缩小输入的固定规则，不由模型上网选股。全部持仓另外提供，不从20名额扣减持仓条数，允许证券集合去重。持仓只有本来进入前20才允许BUY；未入选持仓只允许SELL/HOLD，不扩大加仓权限。
+每个候选提供代码/名称、D原始收盘价、5日和20日调整价变化、20日日收益样本波动、20日平均成交额及D成交量/额。涨跌：P[20]/P[15]−1和P[20]/P[0]−1；波动使用20个收益、分母19。已有持仓另含当前股数/可卖数、成本、当前市值/权重和允许动作。必要输入缺失要显式记录，不能用0替代；持仓所需决策/估值输入不齐时本账户等待，不让模型猜。
+提示词包含目标N、数据D/Kp、账户E/现金/费用、允许证券和动作、规则限制、候选表及已有持仓。系统要求只基于这些事实给BUY/SELL/HOLD和1—2句理由，禁新闻搜索、工具调用、自由代码、保证盈利及想象未提供的价格。模型无直接写账或采集权限。
+模型只返回一个JSON对象：target_session、ordered_intents、no_order_reason。BUY字段为code/side/reason/basis_fields/order_index/limit_price/budget_fen；SELL用sell_fraction替代budget_fen，0<比例<=1；HOLD无数量/预算/限价，basis_fields可为空；BUY/SELL的basis_fields必须含1—3个该证券实际已提供的指标字段名。候选代码必须匹配给定范围；账户/策略/时点/配置身份由程序写入，模型不得指定或覆盖。
+order_index从0开始按ordered_intents位置连续编号（包含HOLD）；no_order_reason为null或非空字符串，全HOLD/空意图时必须说明。五代码上限只计算BUY/SELL，HOLD不占交易额度；总意图数不超过提供的允许证券数量。严格检查重复键、额外键、非有限数、金额浮点、错误日期、重复代码/双方向、非tick价格、越范围证券和超过5代码等；比例/价格为普通十进制字符串，不接受指数、正号或非ASCII数字；预算为整数分。拒绝JSON转义后孤立代理字符，避免原件UTF-8落盘失败。模型不能直接修改股票数量或现金余额。SELL比例由确定程序转换合法数量；BUY预算含费，交验证器转换整手数。明确无订单须有原因，不能接受空对象作成功。
+仓位上限是规划约束：按D日E及现持仓市值评估，单只新增后目标<=20%、总新增后股票市值加买入预算<=80%，目标持仓最多5只；按配置值替换。预期卖出不提前抵扣这些占用、不腾出席位、不增加现金。达到上限可卖出/持有，下一轮用已释放资源再买；价格波动导致被动超限不自动强平，仅禁止继续加超限仓位。不能承诺成交后任意价格下权重始终精确等于上限。
+有可卖持仓、现金、席位和仓位空间时，提示模型优先少量换仓；首日允许只买。每天保留一次决策结果，正常有输入时生成次日计划，但不强制违法或虚构买卖。合法HOLD可接受；模型/数据失败、买不起或市场不成交均明确记原因。
+具体程序流水线及固定任务模板（开发必须落实，不能只发送泛泛荐股请求）：
+P1  检查目标日、盘前截止、账户可规划状态及已存决策；已有有效计划直接返回，不调用模型。
+P2  按本节固定规则筛选合格证券、计算21日信号和量额特征，形成最多20只买入候选及全部持仓；缺失/排除原因另存。字段ret_5d、ret_20d、volatility_20d、avg_amount_20d、close、volume、amount均由程序确定。
+P3  按已确认账户计算available_cash_fen、sellable_quantity、current_weight、remaining_new_slots。总新增预算上限=max(0,min(可用现金,floor(E×总仓位上限)−现持仓市值))；每只预算上限=max(0,min(总新增预算上限,floor(E×单只上限)−该股现市值))。候选分别标allowed_actions；无真实空位的新证券禁止BUY，已有证券不额外占位。不得因本次建议卖出而扩大任何上限。
+P4  组装PlanningRequest，只含目标日/知识截止、字段单位、模型可选动作、上述预算/席位、费用/tick说明、候选及持仓表、响应schema。引用固定prompt_revision；保存模板摘要、完整脱敏请求和输入摘要，然后按账本占位调用模型。
+P5  模型仅在提供的证券、动作和资源边界内选择买/卖/持有、预算或比例、限价和理由；不决定资格、不计算账户余额、不自行采集、不改写程序指标或候选筛选规则、不修改限制。
+P6  程序解析JSON，校验类型/证券/动作/预算合计/仓位/席位/比例/价位及basis_fields。basis_fields只能引用该股已有字段，如ret_5d、ret_20d、volatility_20d、avg_amount_20d、current_weight或sellable_quantity；程序把真实字段值附在审计理由旁。引用不存在/不属于该股的字段为非法；理由作为模型判断文本展示，事实栏只显示程序从已存输入解析的真实值。固定指令禁止外部行情推断，但确定性程序不宣称能自动证明自然语言推论正确或盈利。
+P7  将通过语义校验的意图映射为公共StrategyProposal，BUY含费预算、SELL比例交既有验证器计算数量与费用；模型专用basis_fields保存在decision_core，映射为理由/证据引用，不作为未知字段直接塞入ExecutionIntent。完整验证VALID后才可成为最终提案、标模型成功并封存。
+P8  保存响应、纠错、计算和验证依据，更新计划/报告。错误最多按同一输入纠正一次；缺事实等待补核，失效输入终止本日，无买卖也有原因和记录。
+
+固定system指令的核心文本：
+“你只为给定模拟账户制定目标交易日的简单买卖意图。只能使用输入表内事实、证券及allowed_actions。先逐项检查已有持仓：结合5日/20日变化、波动与当前权重判断保留或卖出；再比较允许买入候选的20日表现、近期方向及波动，选择有明确相对依据的少量新增仓位。成交额排序只是输入筛选，不自动代表应该买入。资源允许时优先提出少量可解释操作；没有足够依据或资源时允许HOLD并说明。不得使用未提供的新闻、未来价格或外部知识推荐股票。买卖合计最多配置允许的代码数；本批卖款和预计空位均不可用于本批买入。仅输出规定JSON，每项买卖给简短理由及1—3个basis_fields，所有预算/价格/比例遵守输入限制。”
+user消息由程序序列化PlanningRequest生成，不由人每天手写。纠错消息只附原响应、结构化错误路径/代码/允许值和相同输入，要求返回修正后的完整JSON；不能让模型自行修订程序规则。提示模板、字段和schema作为可测试文件随当前源码维护，不存API密钥或专属端点。
+
+LLM策略由“确定性程序逻辑＋模型判断”组成。允许单独调整程序筛选/计算/校验，单独调整模型/指令/生成参数，或同时调整。审计分别保存program_revision/strategy_version及真实实现摘要、请求model_ref/模型配置、prompt_revision及摘要、生成参数和account_policy_id/hash，并通过不可变model_response引用保存返回模型名/usage/finish_reason；这些字段共同构成完整身份，strategy_version本身只表示明确算法实现修订。同一账户可未来调整这些配置，但不改策略家族/本金，不覆盖已冻结计划；进行中父任务继续原目标，不允许新程序重新解释历史决定。模型配置变化即使源码摘要未变，同日恢复也记CONFIG_CHANGED。identity中的model展示当时请求配置；返回模型名称按响应原件核查，不声称必然等于配置名。模型部署可能在相同模型名下变化，记录可观测的模型名/响应元数据，不承诺远端字节级可复现。
+
+正常一次请求，最多一次纠错/失败后的再次尝试，每账户+N累计不超过2次。首轮输出错误可将原回答和结构化错误反馈给同一模型纠正；不得悄悄删掉错误订单、改成规则选股、第三次重问。模型调用失败可在仍有次数/时间时重试一次；无响应文本时保持原两条消息，不伪造纠错文本；第二次claim显式使用目标日及尝试序号的独立attempt_id，避免相同请求摘要重放首次占位。两次计数跨进程重启/模型配置变化仍有效。
+
+八、规划流程、时限和恢复
+
+应用获得每账户+N的非阻塞进程锁，再读取账户/已封存计划/决策记录；锁跨模型请求，SQLite事务只在短占位/保存时持有。第二进程返回ALREADY_RUNNING，不把仍活动的CLAIMED当崩溃；OS释放锁后恢复才可把遗留CLAIMED记INTERRUPTED，该次仍计数。
+步骤：确认账户/日期/待办 → 收集输入并固定参数/规则摘要 → 保存PREPARED决策输入包 → 计算规则目标或申请模型尝试 → 保存响应/计算结果 → 策略语义校验及候选提案 → 完整执行验证 → VALID后固定最终PROPOSED及StrategyProposal（模型同时确认SUCCEEDED） → 账本原子封存 → 决策标FROZEN。每次候选原件按输入包/尝试序号单独保存；尚未验证通过的候选不是不可替换的最终PROPOSED，非法模型候选可在次数内纠错、原件仍留审计。纯策略计算不写库；上述写操作均为显式应用职责。准备/保存决策、政策和模型尝试等非财务写入不递增account_revision，仅更新规划/报告修订；封存、资金和持仓变更才按现有财务契约推进，避免保存输入就使自身失效。
+模型必须先claim_model_attempt保存已脱敏请求，再执行单次无内部重试调用。原响应返回后立即finish_model_attempt(RECEIVED)，保存经过凭据/专属端点脱敏的文本及finish_reason/usage，之后才解析。若保存响应时财务修订已变，重读修订仅用于保存同一响应审计，再终止为STALE_INPUT；不能据此更新旧提案的账户修订来封存。只接受finish_reason=stop；length或未知完成原因不能当完整计划；反馈错误纳入纠错。模型尝试仅在策略语义和完整执行验证VALID后从RECEIVED标为SUCCEEDED；非法输出标INVALID后才允许第二次。验证缺事实时保持RECEIVED并在决策标WAITING_VALIDATION，重启复用原响应，不浪费一次纠错去补数据。SUCCEEDED后封存冲突只处理封存/输入失效，不撤销成功状态重新请求。
+总调用deadline=min(实际开始+120秒，N日09:00−10秒)。适配器保留socket超时；strategies/llm_call已用可终止子进程保证整个请求硬上限并回收，不能仅在线程Future超时后留下后台请求继续。剩余安全时间不足时不申请新尝试。迟到响应可留审计，但不得越过账本封存截止。
+恢复显式读取目标strategy_decision及report_snapshot(mode=recent)中的目标模型尝试/父任务，不能只用pending_work（它不列SUCCEEDED或COMPLETE）。RECEIVED/SUCCEEDED且未封存的响应直接恢复解析/验证，不重问。PROPOSED恢复原提案；已FROZEN返回账本原计划。失败保存原因和次数，不把异常变成买入0股或成功成交。
+市场来源补齐后，尚未PROPOSED、尚无模型请求且同decision未保存父任务的WAITING_INPUT/PREPARED可在截止前重新准备：每次另存不可变input_document(path/content_hash)和前次失败原因，不覆盖原件。一旦模型请求占位或同decision父任务已保存，输入包固定，模型第二次仅重试/纠错同一输入。模型已占位、父任务已保存或任何策略已PROPOSED后，账户财务修订变化均记STALE_INPUT并结束本目标日规划，不改revision复用、不更换输入重问；SUCCEEDED也不例外。到09:00仍可持久MISSED_CUTOFF终态。未固定输入的规则准备可留痕重做。终态不重开，下一真实目标日再正常规划。
+算法/参数摘要变化时，不用新规则解释进行中的旧决策；已有冻结计划继续按原证据执行，未封存决策记录CONFIG_CHANGED并结束本目标日自动规划，未来生效日再用新配置。不得把软件修订标识当作读取并运行旧策略代码的承诺。
+正常无交易（非调仓日、全部持有、低于一手、无目标）可形成有原因空计划。缺关键事实、模型失败、错过截止不是伪造的正常空计划；用决策状态和record_no_plan/步骤原因记录，未来若同日仍允许恢复则保留真实过程。无交易也由账本/流程在观察开始后生成真实交易日日报。
+
+规划状态按如下有限集合记录（模型尝试的状态另沿用账本，不混用）：
+WAITING_INPUT：尚无模型占位/提案，事实不足；截止前可追加新输入包恢复。
+PREPARED：输入/政策已保存；模型未占位且尚未PROPOSED时允许留痕重新准备。
+WAITING_VALIDATION：响应或候选提案已有，执行验证缺事实；只补核证据、保持原输入/意图，不重新问模型。
+PROPOSED：策略及执行验证已通过，最终提案不可覆盖；封存时可复核事实并幂等续办，不能反回PREPARED。
+FROZEN：已取得账本计划身份，终态；空计划同样可达到该状态。
+MODEL_FAILED / CONFIG_CHANGED / STALE_INPUT / INVALID / MISSED_CUTOFF：本目标日终态，原因与尝试原件保留，不重新规划。
+等待状态到截止转MISSED_CUTOFF；市场补齐只能追加执行资格证据，不能更换已占位模型的评分/输入或让未来事实进入Kp。已有FROZEN永不被终态失败覆盖。非调仓/HOLD属于合法空提案，不是失败状态。
+
+九、公开契约与审计数据
+
+SL01已在common/strategy_definitions.py实现中立白名单descriptor与参数schema，明确策略身份、定义修订、uses_model和参数默认/约束；不导入策略类、不计算交易；当前内置三策略的实现修订绑定明确源文件清单及真实SHA摘要，策略层消费同一descriptor，不另立能力或参数登记。内置三策略完整默认按descriptor→非密钥策略配置→账户显式覆盖合并，S1-LT含S1共享评分/窗口参数及自身覆盖；未知定义、未知键和非法组合不得临时放行，详见账本附件第十七节SL01。账本持久StrategyDecision索引已实现；策略侧PlanningContext、StrategyDecision与实际计算已经实现；SX01提供decision_ref公共引用及纯校验。strategies/base.py保存公共上下文/结果，规则plan(context)->StrategyDecision为纯计算。context含账户完整快照、最终日报引用、账户政策快照、D/N/Kp、候选/持仓输入与证据、父任务（如有）；规则策略为纯计算，LLM解析/意图生成也可用持久响应离线验收。模型实际调用由应用包装占位，不允许策略类绕过次数控制直接请求。
+StrategyDecision持久契约含decision_id、account_id、target_session、state、sequence、strategy_id、strategy_version、policy_id/policy_hash、account_revision/快照摘要、input_document(path/content_hash)/input_hash/知识截止、decision_document、proposal/core/验证引用（可空）、reasons、required_inputs、model_attempt_ids及parent_task_id（可空）。decision_id按账户+N稳定唯一；prepare/save必须携expected_sequence比较交换，初次期待0、建立sequence=1，实际更新递增，同operation_id同文重放沿原回执。非财务保存使用financial=False，不使自己的account_revision失效；并发旧sequence不能覆盖新决定。内部准备/失败/纠错过程另存不可变原件，不覆盖输入包；状态转换沿第八节，PROPOSED不能退回准备，终态不能重开或覆盖FROZEN。
+StrategyProposal/PlanEnvelope/FrozenPlan已增加provenance_mode与decision_ref。STRATEGY引用固定包含decision_id、account_policy_id、account_policy_hash、strategy_implementation_hash、input_hash和decision_core={path,content_hash}；原件位于data/plans/strategy/<content_hash>.json。保留strategy_id、strategy_version、account_id，不能用一串version代替实际参数。纯验证器通过decision_core关键字接收调用方已读原件，不自行读文件；验证报告保存source_proposal和策略引用。Envelope/FrozenPlan的strategy_market_snapshot_ids/strategy_data_evidence保留完整策略来源，data_evidence用于执行资格，二者不能互相替代。
+SX01已在应用读取和账本封存事务内核验原件、提案、账户/目标日、政策快照摘要及生效区间，保留完整引用并归档下级原件；封存数量按公共数量/预算/比例算法复核，接受/跳过意图须覆盖原提案。此处已完成的是政策快照内部一致性；SL02权威账户政策登记、唯一decision_id索引及生效互锁也已实现并通过本次验收。新STRATEGY封存必须在同一事务核对权威政策及PROPOSED记录、当前sequence、准备时账户revision/快照、input/core/ref与原Proposal，并原子提交计划/预留和决策FROZEN；不能只通过调用方自造的自洽core授权。关联模型attempt须在RECEIVED之后、接受已完整验证的PROPOSED时同事务确认SUCCEEDED，finish不能提前宣布策略成功。后续撮合使用原FrozenPlan，不重新选股或套入变更后的策略参数；真实账户目前无计划，不补造历史交易证据。
+MANUAL与STRATEGY是同一程序的输入来源模式。现有显式人工执行默认MANUAL，不带策略决策引用或策略来源；STRATEGY必须提供完整ref/core，不允许缺证后降级，报告或来源提案残留STRATEGY也不能伪装为MANUAL。未来自动策略发布必须使用STRATEGY并从SL02取得权威政策/原件；不得把已有进行中/终态策略决定改标签为MANUAL来绕过登记或重开同日规划。
+先封存不含自引用的不可变decision_core JSON：来源查询/ID/摘要 → 资格与排除原因 → 调整价/特征 → 指标/百分位/全排名 → 目标权重/股数 → 当前差额 → 手数/费用/现金分配 → 未绑定decision_ref的买卖/HOLD意图和跳过原因 → 模型输入/脱敏响应/纠错引用。Proposal再引用decision_core的path/hash；完整Proposal、验证结果和冻结回执分别保存、通过decision_id在数据库索引/步骤中关联，不能回写decision_core或让它引用含自身hash的提案。该有向证据链避免摘要自引用循环。SX01的core固定保存schema_version、decision_id、account_policy、strategy_implementation_hash、input_bundle、proposal、calculation；input_bundle含策略来源列表，proposal是规范化提案去除decision_ref，计算和模型理由放calculation/引用原件。政策投影严格只有policy_id/account_id/strategy_id/strategy_version/effective_from/effective_to/known_at/parameters八字段，hash由该对象计算；definition_status、uses_model、定义来源摘要等管理元数据留外层。base的effective_from为null，有日期政策保存生效日，effective_to一律null；get_account_policy按N选择最新已生效政策，后继政策不能回写旧上界或hash，历史决定只用冻结引用。已注册strategy_version为明确的定义修订，实际实现摘要另行绑定，登记不代表计算实现完成。非整数数值按既有证据约束保存为十进制字符串。备份会递归校验和归档core内的业务文档、市场观测与快照引用，缺损/冲突摘要不能标完整。数据原件引用可验证快照及清单，CSV只导出阅读摘要。
+数据库保存小型索引/状态/摘要、参数及计划关联；JSON存完整决策。运行JSONL的现行建设契约由docs/runtime-observability-design.txt的RO01—RO12落实：在workflow等三个后台入口的运行上下文内，按调用在logs/runtime/YYYY-MM-DD/<invocation_id>.jsonl记录run_id、account_id、可得decision_id、阶段、耗时和安全错误码，并关联程序身份/资源采样。没有上下文或尚未取得decision_id时明确未记录，不声称所有独立手工策略命令已被逐次观测。完整输入、计算、模型公开响应及策略原件仍由原有decision证据链保存，JSONL只存有界关联和摘要，不重复巨量输入。日志丢失不改变已记账事实；数据库和不可变原件继续承担业务恢复与决策解释，缺运行日志仍须报告观测缺口。查看器按公开接口/公开引用读取，不直接分析私有市场SQL。
+审计可回答：某日用了哪套规则/参数/模型、数据当时是否可知、某股为何入选/被排除/买多少、费用怎么算、为何没成交、重启是否重问或重复记账。提供按账户/策略/修订/日期查询和JSON/CSV导出；不自动给LLM总结或优化参数。同规则摘要可离线复算核对；摘要已改变的历史记录依据保存的中间结果审查，不声称用当前代码复现所有历史算法。
+运行观测补充不改变上述策略/政策/冻结契约，不重建数据、重问模型或回填旧性能；已存业务资料足以解释其记录覆盖的决策，不能推定历史CPU/RSS、模型内部状态或任意未来分钟/盘口研究数据存在。运行原始明细30天/压缩归档180天按runtime_retention配置，活进程、未解决异常及金融/封口引用受保护；源码审计对象和唯一业务证据不按日志期限删除，业务审计与运行归档分开查询；同盘归档不是异机灾备。本次已实现并经自动化及真实观测范围核验，详见当前入口；workflow在途记录不表示策略/账务已结束。
+模型审计只留白名单：model_ref、公开模型名、生成参数、提示模板摘要、finish_reason、usage、耗时、尝试编号、已脱敏文本。不得序列化完整ModelSettings、API密钥、Authorization或专属服务URL。ModelAudit已提供text/messages/configuration/request/result公共接口：密钥、专属URL/请求地址和主机名统一脱敏，常见JSON转义保持原文本结构；配置和usage按白名单独立复制，默认配置repr及状态输出不展示私有值。请求正文中的业务消息与返回text/model/finish_reason使用相同脱敏方式；实际连接和鉴权仍使用真实配置。提示模板摘要、耗时和尝试编号由策略调用方补充，不由模型组件伪造；SM01已实现并验收。
+
+十、账户存储、命令与展示
+
+本次SL01—SL04实施前方案于2026-11-01完善，以下代码/新增验收/生产迁移现均已完成；完整细则及SL-C01—SL-C20见docs/ledger-design.txt第十七节。最小持久化方案：在现有账本中增加account_policies（账户参数及生效日、不可变摘要/原件）和strategy_decisions（账户+目标日唯一索引、当前规划状态/序列/提案及原件引用）两张表。现有accounts保存稳定身份/本金/策略家族，account_state保留财务状态并增加展示资料引用；operations/job_runs继续承担操作幂等及步骤审计，不建第二个账户库或通用事件平台。
+SL历史迁移及现行schema4兼容升级契约：保留明确源1兼容分支，源2先按其旧表清单一致备份并核验，不能查询尚不存在的新表；再事务建表并按实际登记账户共用initialize_base_policy，不按今天种子重建。现有已注册三策略生成完整base；未知旧seed保留身份/本金/状态，base明确definition_status=UNREGISTERED、uses_model=null、parameters={}，可查询/审计/恢复但不可prepare/claim，禁止猜测能力。保留全部账户ID/创建时间/注资/余额/观察起点与既存业务，不伪造历史决策。现行兼容升级仅在事务成功后推进至schema4；2026-11-01的SL历史迁移目标为schema3，保留当时事实。新功能拒绝未升级结构，诊断/备份须能识别源版本，不隐式迁移。正式生产已在代码/隔离验收及SL全量回归通过后，按授权先核验完整备份、再显式完成2→3，共21表；原19表逻辑记录全部保留，只新增3份base政策、0份策略决策。迁移前后对照及恢复演练见logs/ledger-strategy-support-2026-11-01-production-acceptance.json和同前缀migration-rehearsal.json。该次SL迁移不改市场库，不开户第四账户、不启动观察/交易/模型/调度；随后的数据补采阶段命令2仅追加10月30日市场事实；正式启动另见当前入口。
+已实现的公开账本支持：create_account、schedule_account_policy、get_account_policy(account,N)、prepare/save/get_strategy_decision；list_accounts/get_account_profile已存在。开户在一个事务建立账户、唯一初始现金流水、状态和政策；开户使用独立短写事务，不能直接套要求账户已存在的_mutate；先检查唯一账户/操作身份，再插账户、注资、状态、base policy及回执。initialize_base_policy同时供新空库initialize、create和迁移调用，在调用方同一事务中保存base及原件引用；先原子保存核验原件再提交DB引用，不能形成缺原件的已提交政策。已有库initialize只核验，不按配置追加账户。同operation_id同请求重放无第二笔钱，异内容冲突；同account_id换operation_id而请求相同返回ALREADY_APPLIED，不同则CONFLICT，绝不第二次注资。开户重放依据原规范创建请求/初始政策，不用后来政策或展示资料替换创建身份。政策变更与prepare/claim/freeze共用账本写锁，拒绝所有未决订单/实际进行中父任务，且effective_session及其后任何已有decision/attempt/plan均阻止变更；不能仅检查生效当天或暗中取消任务。已有activate_simulation、report_snapshot、claim_model_attempt/finish_model_attempt、save_rebalance_task、freeze_plan继续复用；模型尝试和父任务通过公开快照读取，不把表名当API。
+account-list、account-profile与已冻结计划的account-audit已由SI01实现；account-create（项目内JSON输入）、account-policy-set（明确生效日）已由SL实现；账户参数/模型能力以注册定义校验，定义/摘要作为中立公共契约传入账本并绑定账户政策，账本不import具体策略或接受临时任意uses_model覆盖；不再硬编码只有LLM-Daily允许调用模型。任何模型策略仍受账户+N最多两次约束。保留独立claim API，但无decision的attempt不得随后混入同日策略prepare；有decision时claim必须绑定PREPARED的sequence/政策/input，第二次仅在同一输入上处理明确失败。响应先RECEIVED不可覆盖，再验证；关联SUCCEEDED随PROPOSED原子接受。财务revision变化只可保存该请求原响应及STALE_INPUT审计，不得重准备或封存旧输入。schema2旧attempt若缺policy/input绑定，迁移保留原件和次数，只可finish既有请求响应，不可用今天政策发第二次请求或纳入新STRATEGY决定。
+每份新备份归档自身账户/政策/完整决策与模型原件及递归来源，同时归档备份时configs/default.toml、execution_rules.toml、tax_holding_rules.toml及preparation.toml等实际存在的非密钥配置，manifest保存路径和摘要；不得归档.env、专属端点或凭据。恢复只用经核验的备份自身配置/DB/原件，在新空目录操作；当前配置变化不能污染恢复。旧备份缺配置明确CONFIG_ARCHIVE_UNAVAILABLE，不静默补今天配置或宣称完整恢复；市场索引缺失仍保留既有审计不完整边界，不扩展全量市场备份。
+策略入口：strategy-inspect只读查看输入就绪/配置/已有决策；strategy-evaluate对固定输入包离线计算规则或解析已存模型响应，不新调用LLM；strategy-plan显式保存输入、必要时调用模型并得到提案；strategy-publish显式串联同一规划结果与验证/封存；strategy-recover恢复同账户同目标日，复用已存输入/响应/提案；strategy-audit只读查询/导出。默认检查不开户、不激活、不联网；文件输出须显式且限定项目reports/strategies，不覆盖数据/配置。
+Python使用StrategyApplication.prepare/plan/publish/recover及纯策略实现；现行workflow通过同一入口组织合法未来目标日规划与恢复，不另写一套策略流程。准备、规划、发布的计算结果与账本提交回执明确区分。策略命令可在整体schedule.enabled=false时显式使用；这不安装后台任务。
+看板账户列表来自持久注册信息；可展示多个同策略账户，各自本金/现金/收益率，不合并总资产。默认选配置的default_account，若不存在则选择稳定排序首账户并说明，不因仍写死LLM而打不开页面。开户前或未启用时展示该账户实际本金，移除固定“每个账户5万元”的计算文本。
+每个账户页显示：账户名称/ID、初始本金、观察起点、策略名称/strategy_id、算法修订、账户参数修订/摘要、生效日、模型名（仅模型策略），可展开program_revision、prompt_revision及生成参数。每日决策/计划/订单使用当日冻结的策略和参数标识，不用今天配置替换历史标签。可展开简短理由、指标/排名/预算及未成交/等待原因，并链接完整审计；日常首页不堆内部哈希。
+
+十一、依赖核查及明确缺项
+
+数据层：默认三策略及自定义窗口所需能力已完整提供；signal_prices的公开Protocol声明和消费者验收SD01已完成。readiness(rules/llm)、signal_prices、prices、security、pool、calendar、events、event_coverage、freeze/evidence_manifest提供事实。评分、排名及20候选选择仍属策略程序；多账户需求由外层合并/分批传入，共用行情库。
+账本已支持：一次report_snapshot取得N账户+D最终净资产/财务状态；原子模型占位及RECEIVED；五实际交易日父任务、实际成交量续办；原计划封存、资源/税务守卫和全部财务入账。SL01—SL04已补齐动态原子开户、权威政策与完整策略决策持久索引，本次消费这些接口，不重复建设账本能力。
+模型已支持：可替换ModelClient、JSON模式、无工具、单次请求无内部重试、finish_reason/usage及安全错误。SM01已实现ModelAudit统一脱敏与公开审计快照，并已通过本轮验收；不改变账本占位/尝试次数规则。严格结构/语义、纠错与提示词由llm/llm_prompt实现，application/strategy持久化尝试和恢复，llm_call可终止子进程执行硬总deadline；socket timeout本身仍不保证总耗时。
+
+SD01  数据公共接口声明：已实现并验收。market/base.py的MarketDataReader现已声明signal_prices(size=L)，service同签名返回DataResult；15项新增消费者测试覆盖自定义/默认窗口、截止、覆盖/异常、除权及只读，复用既有500日采集续跑验收。无新增数据算法、迁移或历史重下。
+SL01  已实现并验收：明确策略参数定义、原子create_account、唯一初始注资/base政策及幂等；不自动激活，保留原三账户。
+SL02  已实现并验收：account_policies/strategy_decisions、严格八字段政策、未来区间互锁、expected_sequence与追加过程原件、完整公共验证及PROPOSED→freeze/FROZEN原子绑定。
+SL03  已实现并验收：按持久策略能力和model_ref控制调用；独立/关联尝试隔离、输入与政策固定、两次上限、RECEIVED先落盘及关联PROPOSED同事务成功。
+SL04  已实现并验收：按源schema备份后显式迁移到3、原账户资金保留、政策/决策/模型/计划跨表核验、备份自身配置隔离恢复；正式库迁移及恢复核验已完成。
+SM01  模型返回及审计统一脱敏：已实现并验收。models/audit.py统一已知凭据/专属端点/主机名脱敏、消息与结果边界、安全配置/usage白名单及副本隔离；settings和适配器复用，配置repr/状态及固定错误不展示私有值。原文指脱敏后保留的模型文本；验收见logs/model-sm01-2026-10-30-verification.json。
+SX01  策略决策证据贯通执行契约：已实现并验收。decision_ref和来源模式贯穿Proposal→验证报告→PlanEnvelope→FrozenPlan；完整策略来源与执行资格分别保存，应用及封存复核core/提案/身份/数量，重放不重算策略，业务原件及下级依赖递归归档。政策快照自洽已支持，权威登记/索引仍归SL02；不改撮合算法。见logs/execution-sx01-2026-10-30-verification.json。
+SI01  外层配置/CLI/看板动态账户与身份展示：代码及自动化验收完成；2026-10-31用户浏览器M01—M06及V01—V06全部PASS，C5/C6/C8通过，SI01界面验收COMPLETE。10月30日116项专项及1519项全量/Ruff、10月31日CSS修正相关130项/Ruff保留为历史事实；11月1日全项目1519项44.61秒及Ruff通过，浏览器沿用10月31日用户实测。该回归不能替代本次SL01—SL04新增验收。详细方案docs/interface-design.txt，日期化浏览器记录logs/interface-si01-2026-10-30-browser-acceptance.json。SL01/SL02原子开户和政策索引已完成验收；SI01完成不扩大为全项目完成。
+
+以上8项支持SD01、SL01—SL04、SM01、SX01、SI01均已完成各自既定验收；SL01—SL04共4项方案已于11月1日完善并全部实现验收，SL验收时新增123项及当时全量1642项测试/Ruff通过、生产schema3迁移完成；完整可执行验收要求集中为账本附件第十七节SL-C01—SL-C20，不建立并行方案。当前SI01实现/验收入口见logs/interface-si01-2026-10-30-verification.json，数据SD01、模型SM01的既有验收及策略需求矩阵原位保留；ST01—ST30和AC01—AC08已完成独立实现及隔离专项，本轮全量/SA最终验收已通过，实际证据由当前入口索引，不用旧数据或支持侧验收代替。
+
+十二、完整验收要求（对应本轮实现；逐项实际结果见唯一当前入口及本轮矩阵）
+
+SA01  三种注册策略/统一DTO、同策略两账户不同本金参数、未知策略/参数拒绝。
+SA02  D/N/Kp、月末新池、真实节假日、首次观察、09:00等号拒绝及无未来行情要求。
+SA03  121价格索引、60收益/样本分母59；LLM21价格/20收益/分母19及5/20日变化；自定义L/skip/V、L<=500、signal_prices协议与持续history_sessions传参。
+SA04  权益调整输入因果、原价与信号价分开、覆盖损坏/缺失原因保持、未来事实拒绝。
+SA05  百分位并列、全同值、零波动、n=0/1、代码稳定排序、重复运行确定结果。
+SA06  候选缺字段不填0；已有持仓评分未知不自动抛售；已知出池/排除退出仍可计划。
+SA07  S1首次前10/9.5%、月末买卖差额、普通日空计划、候选不足和低本金买不起。
+SA08  S1-LT前10新增/前20保留、保留仓占席位、超过12%才减到9.5%、不补低配仓；105股原样保留不错误取整。
+SA09  规则限价±1%及tick方向、含费预算、比例/整手/零股、显式数量不得静默改。
+SA10  按冻结政策约束交易代码数/同码单向，父目标按实际成交续办而非按订单或尝试；原五代码初建分日验收是旧政策事实，新规则解除与兼容另由NL01—NL12验收。
+SA11  五交易日到期、不延长、不补历史子计划；首次与月末合并、已有任务月末不重建。
+SA12  未成交下次新计划可重试、原冻结日不可改价；窗口外只补核原单不新增。
+SA13  当次卖款/预计空位不能支持新买，剩余现金按固定顺序分配，原父目标不扩大。
+SA14  LLM20候选/持仓、指标和资源上限的确定计算、固定请求/提示模板、字段单位及快照摘要；禁止将流程退化为泛泛荐股请求。
+SA15  严格JSON重复键/浮点/多余字段/错代码/错日/超五单、仓位和席位限制、HOLD及理由，basis_fields有效性和真实指标值旁证、模型字段到公共DTO的显式映射。
+SA16  模型单次请求、最多两次、RECEIVED前后中断、SUCCEEDED未封存恢复不重问。
+SA17  硬总时限与09:00前余量、两进程只一次占位、迟到响应不封存、另一账户继续。
+SA18  API密钥/专属端点不进提示、数据库、日志、报告；模型响应回显也脱敏。
+SA19  稳定decision_id、配置/账户修订变化、原件篡改/缺失拒绝、终态不覆盖。
+SA20  完整来源→特征→全排名→目标→预算→提案→冻结→结果链可查询、离线复核与导出。
+SA21  决策证据通过实际验证器保存至FrozenPlan及备份，不能只有proposal_hash或执行资格证据。
+SA22  原子开户/重复创建/异内容冲突、任意允许本金、未启用不交易、默认三账户原身份资金不变。
+SA23  参数未来生效、忙任务拒改、已有计划历史标签不变、单独程序/单独模型/两者一起调整的身份与未来生效；同模型换参数不重置次数。
+SA24  配置/CLI动态账户、非LLM-Daily模型策略能力判定、未知账户明确错误。
+SA25  schema2→3先备份迁移，失败回滚；带新增账户的备份独立恢复，当前配置不污染备份政策。
+SA26  看板账户切换/实际本金/种类与修订、初始/空计划/失败原因、无合并资产、CSV身份一致。
+SA27  三策略真实公开数据/账本/执行实现的隔离闭环，含日结/HTML；模型用可控假响应。
+SA28  只读命令零写入/零网络/零LLM，显式plan/publish回执区别、报告失败不重问或重交易。
+SA29  保留既有数据/账本/执行断言的全量回归；命令1/2、数据独立性、缓存复用不变。
+SA30  ST01—ST30、AC01—AC08、SD/SL/SM/SX/SI全部逐项映射，方案/程序/配置/页面/记录同步。
+
+十三、自检结论与实施边界
+
+已将概述中未明确的计算、并列、S1-LT席位、限价、LLM候选选择、仓位检查、父任务/现金/席位时点、模型中断及策略身份落为确定规则。新增账户与审计不使用多版本程序、第二套行情库或自动优化系统。常见失败按固定状态处理；不扩展到复杂券商系统或极低概率市场微观结构。
+数据依赖含SD01现已完整通过开发/自测/验收；SM01模型统一脱敏与审计接口已实现并验收。SX01已实现并验收；账本核心可复用，SL01—SL04共4项支持也已通过验收；三策略计算及完整策略/账户独立联动已实现，整体调度与流程已实现，WF01—WF32全部验收通过。数据SD01-C1—C6均有测试映射，无遗漏；动态开户已另经SL01通过，不据此宣布策略计算完成。
+数据命令1仍首次/月末最后交易日18:10后prepare-data；命令2仍每交易日18:10后data-sync，月末显式补新池缺口的约定不变。日常增量复用已有合格历史，新增证券/窗口按现有能力补缺；月末准备新批次仍按其来源版本流程请求历史并保留旧观测，此前月末准备实际重新请求100股121日历史；本轮策略开发不采集、不重下。本次已完成账本备份及显式schema2→3升级，后续开户使用现行schema4公开接口；不改变市场数据结构，也不自动启用全天调度。
+
+SI01展示元数据契约：calculation.identity可冻结strategy_name/program_revision/prompt_revision/uses_model；仅uses_model=true时显示identity.model中的model/provider/generation_parameters，模型参数为已脱敏公开值、非整数用十进制字符串。历史字段缺失显示未记录，不读今天模型配置补齐；原件缺损局部标AUDIT_UNAVAILABLE。未封存决策和当前政策现通过SL02公开接口及CLI读取；看板继续沿用已封存审计投影，损坏原件局部AUDIT_UNAVAILABLE。
+
+SI01界面验收已完成：2026-10-31用户浏览器M01—M06/V01—V06全部PASS，SL01—SL04支持另于11月1日完成。该结论不扩大为三策略计算或整日调度已实现；当前数据、回归和剩余工作见docs/implementation-status.md及logs/project-current-state.json。历史界面证据见logs/interface-si01-2026-10-30-browser-acceptance.json。
+
+SL最终验收入口（2026-11-01）：logs/ledger-strategy-support-2026-11-01-requirements.json逐项映射SL-C01—SL-C20且全部PASS；verification.json记录1642项全量、123项新增、Ruff及依赖检查；production-acceptance.json记录正式schema3/21表、原19表完全保留、3份base政策、0策略决策及账户资金/观察状态不变。该次SL验收时三策略实现与SA01—SA30整体验收仍为后续任务，随后已完成并另行封口；本段保留SL当时范围，命令1/2和历史数据下载要求不变。
+
+本轮策略完整验收（2026-11-01）：ST01—ST30、AC01—AC08与SA01—SA30共68项及8项依赖均完成逐项映射；全部映射测试通过。完整记录为logs/strategy-implementation-2026-11-01-requirements.json，当前全量和生产保护事实见docs/implementation-status.md。原10月30日设计矩阵及各支持验收均保持封口原字节；没有真实模型调用、生产政策/激活/交易或后台调度。
+
+十四、DAILY_SYMBOL_LIMIT_SCOPE_V1未来衔接（NL，2026-11-02，IMPLEMENTED_AND_AUTOMATED_ACCEPTED）
+
+本节已获用户明确授权并在开发前确认；源码及专项已完成，状态IMPLEMENTED_AND_AUTOMATED_ACCEPTED。统一最终全量和正式采用仍由独立回执确认，不把隔离测试写成生产操作。今日2026-11-02已冻结S1五单、S1-LT五单、LLM两单保持原政策、限价、股数与原件；新政策已通过公开操作明确追加，2026-11-03生效，真实回执见logs/run-home-2026-11-02-policy-adoption.json。全项目只有一套当前程序，历史定义/冻结政策作为证据兼容，不运行另一套旧策略。
+
+参数范围：新S1/S1-LT的max_daily_symbols=0且只接受0，表示无每日交易代码截断；历史definition.defaults=5仍按原1至5校验。LLM默认5、允许1至5，BUY/SELL合计、HOLD不计。目标10只、持仓席位、排序、限价、资金、当次卖款不预支、T+1、费用及父任务最多五个真实交易日均保持。共享校验源码改变会更新三个implementation_hash；LLM算法、提示和五只约束不变，但也必须显式采用新共享实现身份。
+
+NL请求API：account-policy-set的transition严格含kind=DAILY_SYMBOL_LIMIT_SCOPE_V1、from_policy_id、from_policy_hash；IMPLEMENTATION_MAINTENANCE另按第十六节，不混用变化范围。S1/S1-LT同时明确strategy_parameters.max_daily_symbols=0；LLM参数不变。缺少transition时保持普通政策互锁，不自动推断兼容升级。effective_session必须晚于实际当前日期、属于已知交易日且操作发生在其09:00前；from须为本账户最新权威policy，除account_revision外再核对policy_id/hash/revision，防止非财务政策更新穿透并发守卫。策略家族/uses_model不变，规则只允许5→0且其余参数逐值相等，LLM参数逐值全等；不能顺带改模型引用、权重、窗口、目标数、展示名或其他参数。现行execution scope必须LLM_ONLY。未知kind、额外字段或非精确变化拒绝。
+
+旧pending订单仅当所有target_session严格早于effective_session时可保留；生效日及以后的任何decision、model_attempt、plan仍阻断，重复生效日不覆盖。提前记录未来policy不等于提前生成计划：仍须D行情18:10后、前日账务完成/估值FINAL、真实资产可规划且在N日09:00前封存。今日原计划按自身旧政策执行。
+
+不克隆、关闭或伪造过期父任务，不修改原task_id、targets、ranking、parameters、start/end/sessions、原input/policy/implementation引用。新policy行及不可变原件追加可选transition元数据，保存from/to身份、旧policy原件引用、实际记录时间、生效日、允许继续的task_id和immutable_contract_hash。该hash覆盖原目标/排名/日期/参数/来源，排除真实动态completed_quantities、child_plan_ids、status及派生投影；采样进度若保留仅作审计，绝不用于未来续办。今日成交继续累加到同一原task，未来每天读取最新实际完成量；原截止不延长，目标和预算不扩大。
+
+strategy_inputs须通过只读公开账本兼容核验，确认目标日权威policy、生效窗口及父任务原contract，才允许原parent policy/hash不同；已核验引用进入冻结input bundle。本节NL纯规则衔接只接受窄5→0差异；同参数实现维护另按第十六节核验，仍按原目标、排名和最新实际完成量续办。freeze_plan在写事务独立重验同一关联和原目标剩余量，不信任调用方“兼容”布尔。save_rebalance_task不用于复制旧任务。新旧policy八字段保持；NL建设当时使用schema3，现行存储契约为schema4；新关联纳入备份/恢复的递归引用和跨表完整性，旧原件不补字段或改hash。
+
+NL01—NL12逐项验收矩阵（专项TARGETED_PASS；源码/测试节点、每项范围及后续全量状态绑定logs/nl-daily-limit-2026-11-02-requirements.json）：
+NL01 参数兼容：新规则仅0、旧定义1至5、LLM1至5；非法类型、未知参数及scope拒绝。
+NL02 规则计算：S1/S1-LT各产生超过五个合法意图；退出/减仓/买入顺序、同码单向、资金/席位/原目标限制保持。
+NL03 真实闭环：超过五只规则订单通过validate→freeze→match→settle，钱股/预留正确，重复提交幂等。
+NL04 LLM保限：第六交易代码在parse/validate/freeze/match各关拒绝，HOLD不计；伪造strategy_id不能豁免。
+NL05 旧冻结兼容：旧无scope政策先冻结11月2日计划，再升级配置/源码；原包/hash/原件/计划ID/限价/股数不变，18:10后仍按原政策真实结算。
+NL06 显式未来采用：三户11月3日新身份显式绑定；pending旧单仅能早于生效日；今日截止后不得改今日计划，未到行情/前日未结仍不可规划。
+NL07 窄变更/CAS：from最新policy及账户revision、身份/uses_model、规则仅5→0或LLM全等；其他参数/模型/展示名变化拒绝，失败零账本写。
+NL08 未来互锁/幂等：目标>=生效日的decision/attempt/plan、重复日期、并发旧policy引用拒绝；同op/payload返回原回执，不重复追加。
+NL09 原任务保全：task_id/targets/ranking/窗口/来源不变，不克隆、重排、扩预算、延长截止或伪造完成，contract摘要可检验。
+NL10 真实进度：pending时先采用未来policy，旧日随后部分成交/部分未成交；未来子单用同一task最新完成量，可处理超过五个剩余代码，不使用采用时零进度快照。
+NL11 双层拒绝：输入组装与freeze事务分别拒绝伪造兼容标志、原目标/排名/截止/引用/transition原件篡改及越界；合法旧冻结恢复不重算策略。
+NL12 归档/回归：备份和隔离恢复保留新旧policy/transition/原task/原plan；缺失或篡改不能COMPLETE。专项、关联回归及统一最终全量/Ruff完成后另留实际结果；正式采用另留真实回执，不以测试冒充生产写入。
+
+NL专项记录：logs/nl-daily-limit-2026-11-02-verification.json；新增两文件当前35个参数化用例，32项统一通过后补充严格对象与破坏引用边界15项通过（含重叠，不将32+15当作独立47项）；既有关联163+285项通过。LLM parse/HOLD等既有验收仍真实执行。旧定义与新定义均保留相应身份验证；普通政策互锁不放宽。统一全量2278项通过，最终观测/展示修正另有对应关联回归；3户11月3日政策均已实际APPLIED。最终统一验收及运行边界见logs/run-home-2026-11-02-validation.json、logs/run-home-2026-11-02-policy-adoption.json与docs/implementation-status.md。
+
+本轮统一收尾口径（2026-11-02）：方案与源码仅此现行版本；NL01—NL12统一映射见logs/run-home-2026-11-02-requirements.json。三账户沿用原激活/注资，11月2日冻结计划和两个原父任务保持；11月3日未来政策已显式登记。政策变化属于未来生效，不冒充今天已执行新计划或已成交。原三户策略共享实现身份对齐，LLM参数/算法与最多五只要求保持。真实后台复跑的最新终态及证据统一见当前实施状态。
+
+2026-11-02运行观测实施补记：可空decision_id及其他公开字段为null时表示未知/不适用，不伪造身份、不计为漏记；可得plan/backup及上传target/release保留安全引用。15:41启动的业务进程使用当时已加载记录器，早先正常null误标omitted的日志原件保留，后续新调用使用修复程序；16:02采样仍RUNNING_RECORDING，无END，不把阶段记录当作策略或整轮完成。已有完整decision原件、冻结计划和模型公开响应仍是决策解释权威，运行观测只关联有界摘要；不从当前源码反推旧策略或补造历史性能。logs/runtime-observability-2026-11-02-protection.json核验金融6表摘要/7计数、240原件、7TOML及3旧closeout保护通过；validation.json记录全量2452与最终受影响355、去重2490及最终235项源清单，runtime-live-sample.json记录实际范围PASS_FOR_OBSERVED_SCOPE。
+
+十五、策略索引与历史审计读取（SG现行契约）
+本次不改变策略算法、参数、政策、生效日、LLM两次尝试/总deadline或冻结身份。完整input/core/proposal仍是既有不可变原件；strategy_decisions只存小索引、状态、sequence及decision-core-proposal-v1引用，proposal内容取自原core并核对摘要，不重复64MB输入或重新生成身份。过程原件追加，PROPOSED/终态互锁不变；get_strategy_decision显式展开，当前报告返回compact索引，完整历史审计另按目标日/ID请求。
+plans使用frozen-plan-header-v1，只有执行或显式get_plan才还原完整冻结计划。生产看板按最近60个有业务记录的交易日及未决订单/未过期活动父任务关联计划显示，并声明total/has_more；这不改变策略允许使用的历史窗口，不裁剪行情或原件。完整audit materialize=True保留原内容；普通报告中的异常巨大calculation附件只给core引用、JSON pointer及hash，小型排名/预算仍可见。源schema3必须先走显式隔离compact及核验切换，不能由策略读取或init隐式迁移。
+
+十六、IMPLEMENTATION_MAINTENANCE同参数实现衔接（SG §13，现行契约）
+本入口用于已审查的存储/读取/诊断维护改变共享implementation_hash，而策略算法及参数不变的情况。它不是通用“忽略hash”或新策略版本入口，也不表示三账户已经在生产采用本次修订；真实account-policy-set回执和生效日以当前入口为准。原冻结计划始终用自身原件，不调用新实现重算。
+1. 必须显式登记未来交易日政策，transition请求恰含kind=IMPLEMENTATION_MAINTENANCE、from_policy_id、from_policy_hash；from必须为本账户最新权威政策，同时核对expected_revision。无transition仍执行普通“未决订单/活动父任务禁止改政策”规则，不自动推断兼容。
+2. 仅接受已登记的各策略implementation-2身份。策略ID、strategy_version、uses_model、display_name及全部实际参数逐值相同；不得借此改变规则、模型引用、提示词或LLM五只限制，不在请求中配置model_ref。implementation_scope为current_source_files，文件键集合完全相同，implementation_hash不同且实际文件差异非空，仅允许src/china_stock_sim/common/wire.py、src/china_stock_sim/application/strategy.py、src/china_stock_sim/application/strategy_inputs.py、src/china_stock_sim/common/strategy_transitions.py；其他文件hash必须原样。
+3. effective_session严格晚于实际上海当前日期、是已知交易日且操作发生在其09:00前；所有旧未决订单目标日须严格早于生效日，生效日及以后任何decision/model_attempt/plan均阻断。不能补造已经错过09:00的目标日计划，不因记录未来政策提前生成计划。
+4. 原S1/S1-LT父任务不复制、不关闭、不延长，不改task_id、目标/排名/数量、原参数/输入/政策、日期窗口或immutable_contract_hash。政策操作不修改completed_quantities/child_plan_ids；后续仍按同一原任务的实际成交量续办。LLM不衔接父任务。
+5. 直接父任务必须匹配前一政策；若父任务仍带更早的合法5→0前参数，只能继承已逐层验证的前驱transition中的同一task_id+immutable_contract_hash。账本核验每个前驱不可变policy原件、从/to身份和摘要、严格连续递减修订，并拒绝环/缺件/伪造tasks。不能把前驱自报tasks当作证明。维护proof追加parameters_hash，绑定本次全部参数；冻结输入保留已验证proof，纯计算与freeze写事务各自复核，不用旧进度采样替代当前已完成量。
+6. 新政策/transition仍以不可变原件追加，原八字段policy投影及旧hash不改；备份和恢复使用同一完整链验证器并归档from_policy_document闭包。验证器源码变化使派生验证回执失效，不能沿用旧通过状态跳过新检查。
+独立实现与相关验收见logs/storage-governance-2026-11-03-policy-maintenance-validation.json；该记录明确未执行生产政策写入。正式采用、原单监督恢复和未来新计划是三个不同事实，分别留证。

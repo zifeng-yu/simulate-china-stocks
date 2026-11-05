@@ -1,0 +1,20 @@
+# 税务持有期起点维护配置。未找到明确规则时始终保留 UNKNOWN / RULE_PENDING。
+# 程序不联网解释政策；仅由维护者依据适用的官方原文添加条目。
+schema_version = 1
+default_state = "UNKNOWN"
+rules = []
+
+# 添加规则时移除上面的 rules = []，按以下 schema 使用 [[rules]]。
+# 不预置任何规则，也不将以下示例视为某一现行政策的解释。
+# [[rules]]
+# rule_id = "明确且唯一的规则标识"
+# effective_from = "YYYY-MM-DD" # 起止范围核验股份交付日，均含当日
+# effective_to = "YYYY-MM-DD"   # 可省略，表示无已知终止日
+# start_basis = "ORIGINAL_ACQUISITION" # 或 SHARE_DELIVERY
+# # ORIGINAL_ACQUISITION 使用 source_lot_id 对应原批次的 acquired_date。
+# # SHARE_DELIVERY 使用本批次实际交付日期 acquired_date。
+# [[rules.authorities]]
+# title = "官方文件标题"
+# reference = "明确条款及适用范围说明"
+# url = "https://官方政府、交易所或中国结算域名/原文"
+# 应用时完整规则复制为不可变 JSON 证据，并保存摘要；修改配置不改写既有批次。

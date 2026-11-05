@@ -1,0 +1,115 @@
+schema_version = 1
+design_version = "local_eod_forward_v2.0"
+mode = "paper"
+timezone = "Asia/Shanghai"
+
+[paths]
+database = "data/state/ledger.sqlite3"
+report = "reports/forward_current/index.html"
+
+[schedule]
+# Authorized production scheduler; the quiet window gates automatic business triggers.
+enabled = true
+daily_start = "18:10"
+# Scheduled business triggers skip this Shanghai-time interval; pending work resumes after it.
+quiet_start = "17:00"
+quiet_end = "19:00"
+plan_cutoff = "09:00"
+awake_check_minutes = 15
+retry_minutes = 15
+max_sessions_per_run = 20
+# Cooperative budget checked before heavy phases and each commit; in-progress atomic commits are not killed.
+max_run_seconds = 3600
+
+[[accounts]]
+id = "S1"
+strategy = "S1"
+initial_cash_fen = 5000000
+
+[[accounts]]
+id = "S1-LT"
+strategy = "S1-LT"
+initial_cash_fen = 5000000
+
+[[accounts]]
+id = "LLM"
+strategy = "LLM-Daily"
+initial_cash_fen = 5000000
+
+[market]
+enabled = true
+free_sources_only = true
+primary_provider = "baostock"
+max_pool_size = 100
+minimum_listing_sessions = 121
+candidate_refresh = "month_end"
+allowed_boards = ["SSE_MAIN_A", "SZSE_MAIN_A"]
+exclude_st = true
+exclude_delisting = true
+exclude_known_complex_actions = true
+max_active_collection_seconds = 1800
+retry_minutes = [1, 5, 15]
+
+[execution]
+enabled = true
+model = "NEXT_SESSION_DAILY_OPEN_V1"
+max_daily_symbols_per_account = 5
+daily_symbol_limit_scope = "LLM_ONLY"
+one_direction_per_symbol_per_day = true
+buy_lot_size = 100
+price_tick_yuan = "0.01"
+t_plus_one = true
+use_same_open_sale_proceeds = false
+reject_limit_up_buy = true
+reject_limit_down_sell = true
+order_validity = "target_session_only"
+partial_fills = false
+slippage_bps = 0
+
+[fees]
+version = "project_assumptions_v2"
+commission_rate = "0.0003"
+commission_minimum_fen = 500
+commission_includes_exchange_fees = true
+sell_stamp_rate = "0.0005"
+sell_stamp_effective_from = "2023-08-28"
+transfer_rate_both_sides = "0.00001"
+transfer_effective_from = "2022-04-29"
+rounding = "ROUND_HALF_UP"
+
+[strategies.s1]
+enabled = true
+lookback_sessions = 121
+momentum_skip_sessions = 20
+volatility_sessions = 60
+momentum_weight = "0.5"
+low_volatility_weight = "0.5"
+target_count = 10
+target_weight = "0.095"
+rebalance = "month_end"
+initial_build_when_ready = true
+rebalance_window_sessions = 5
+
+[strategies.s1_lt]
+enabled = true
+enter_rank = 10
+retain_rank = 20
+trim_trigger = "0.12"
+trim_target = "0.095"
+rebalance_window_sessions = 5
+
+[strategies.llm]
+enabled = true
+model_ref = "daily_planner"
+max_candidates = 20
+max_holdings = 5
+max_target_weight = "0.20"
+max_total_target_weight = "0.80"
+max_attempts_per_target_session = 2
+timeout_seconds = 120
+allow_tools = false
+
+[reporting]
+default_account = "LLM"
+aggregate_accounts = false
+benchmark_codes = ["SH000001", "SZ399001", "SH000300"]

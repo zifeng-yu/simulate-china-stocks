@@ -1,0 +1,47 @@
+# Forward rule evidence and explicit maintenance blocks; never a historical backtester.
+schema_version = 1
+parser_id = "main_board_forward_2026_v1"
+coverage_mode = "KNOWN_ONLY_COVERAGE"
+execution_blocks = []
+
+[fee_policy_metadata]
+effective_from = "2026-07-06"
+known_at = "2026-10-29T00:00:00+08:00"
+commission_basis = "project_assumption_not_broker_quote"
+stamp_source = "https://shanghai.chinatax.gov.cn/tax/zcfw/zcfgk/yhs/202308/t468451.html"
+transfer_source_sse = "https://www.chinaclear.cn/zdjs/fbzyls/202512/922adc26c2ff4865930c7fb77688bb8a/files/上海市场证券登记结算业务收费及代收税费一览表.pdf"
+transfer_source_szse = "https://m.chinaclear.cn/zdjs/fbzyls/202512/a59388fbfa714c5fa546784891a42e30/files/深圳市场证券登记结算业务收费及代收税费一览表.pdf"
+historical_transfer_start_not_reverified = true
+
+[[rules]]
+rule_id = "SSE_MAIN_A_2026_07_06"
+exchange = "SSE"
+board = "SSE_MAIN_A"
+effective_from = "2026-07-06"
+# Conservative availability bound: the day after the dated publication.
+known_at = "2026-04-25T00:00:00+08:00"
+source = "https://www.sse.com.cn/lawandrules/sselawsrules2025/stocks/exchange/c/c_20260424_10816482.shtml"
+source_clauses = ["3.1.4", "3.3.8", "3.3.9", "3.3.11", "3.3.13", "3.3.17", "4.3.2", "4.3.3"]
+price_tick = "0.01"
+buy_lot_size = 100
+max_order_shares = 1000000
+limit_rate = "0.10"
+risk_warning_limit_rate = "0.10"
+ipo_unlimited_sessions = 5
+no_price_limit_conditions = ["IPO_FIRST_FIVE_SESSIONS", "RELISTING_FIRST_SESSION", "DELISTING_FIRST_SESSION"]
+
+[[rules]]
+rule_id = "SZSE_MAIN_A_2026_07_06"
+exchange = "SZSE"
+board = "SZSE_MAIN_A"
+effective_from = "2026-07-06"
+known_at = "2026-04-25T00:00:00+08:00"
+source = "https://docs.static.szse.cn/www/lawrules/rule/trade/current/W020260424690713155663.pdf"
+source_clauses = ["3.1.4", "3.3.8", "3.3.9", "3.3.11", "3.3.13", "3.3.15", "3.3.19", "4.4.2", "4.4.3"]
+price_tick = "0.01"
+buy_lot_size = 100
+max_order_shares = 1000000
+limit_rate = "0.10"
+risk_warning_limit_rate = "0.10"
+ipo_unlimited_sessions = 5
+no_price_limit_conditions = ["IPO_FIRST_FIVE_SESSIONS", "RELISTING_FIRST_SESSION", "DELISTING_FIRST_SESSION"]

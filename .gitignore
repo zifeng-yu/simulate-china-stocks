@@ -1,0 +1,67 @@
+# Rebuildable development environment and caches
+.venv/
+.cache/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+.DS_Store
+
+# Local credentials. Only the credential-free example belongs in Git.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+id_rsa
+id_dsa
+id_ecdsa
+id_ed25519
+.netrc
+.pypirc
+/.ssh/
+/secrets/
+
+# Workstation deployment configuration; commit safe templates instead.
+/configs/local.toml
+/configs/*.local.toml
+/configs/*-local.toml
+
+# Cloud publication is a local-only optional component, not part of public Git.
+/src/china_stock_sim/publishing/
+/configs/publishing*.toml
+/deploy/web/
+/deploy/launchd/bin/A股模拟-云端上传
+/tests/test_static_publishing*.py
+/tests/test_publishing*.py
+/tests/test_trading_cloud_interaction.py
+/tests/test_trading_history_cloud.py
+
+# Host-bound generated artifacts. Keep Swift sources and the two core portable shell launchers.
+/deploy/launchd/current.plist
+/deploy/macos/*.app/
+/deploy/macos/*.build.json
+
+# Private business data, reports and audit logs stay on the workstation.
+data/**
+!data/**/
+!data/**/.gitkeep
+reports/**
+!reports/**/
+!reports/**/.gitkeep
+logs/**
+!logs/.gitkeep
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+/models/
