@@ -8,6 +8,7 @@
 
 | 日期/事项 | 决策与边界 | 证据 |
 |---|---|---|
+| 2026-11-05 CI平台契约修复 | Ubuntu全量检查的唯一失败为测试硬编码macOS返回值；显式检验Darwin/Linux状态与退出码、只读且无构建安装，生产逻辑不改；全量CI保留并输出最慢20项耗时。 | [核验方案](../logs/github-ci-repair-2026-11-05-plan-review.json)、[本机12项验证](../logs/github-ci-repair-2026-11-05-test-validation.json)；远端结论见对应提交Actions |
 | 2026-11-05 LP独立发布与公开Git边界 | 上传保留唯一独立本机层，完整程序/配置/模板/专用部署与测试不提交；核心可选接入，公开副本可用，本机原三任务继续，安装定义匹配无需重装。 | [验收](../logs/local-publishing-boundary-2026-11-05-final-acceptance.json) |
 | 2026-11-05 GP首次公开仓库准备 | 脱敏、凭据/运行数据排除、真实候选扫描及空索引保护；先前允许提交发布模板的范围已由LP收紧，历史结果保留。 | [发生时验收](../logs/git-push-preflight-2026-11-05-final-acceptance.json) |
 | 2026-11-05 DO目录归纳与清理 | 全目录核对后可撤销移除退役外层材料及无业务缓存，主项目文档归纳；金融事实、引用证据及层次保持，不扩展程序优化。最终完成范围见当前入口。 | [方案核验](../logs/directory-consolidation-2026-11-05-plan-review.json)、[实际清理](../logs/directory-consolidation-2026-11-05-cleanup-result.json) |

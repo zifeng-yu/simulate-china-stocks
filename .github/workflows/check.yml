@@ -27,4 +27,4 @@ jobs:
       - name: Check source and offline tests
         run: |
           .venv/bin/ruff check .
-          .venv/bin/python -m pytest -q
+          .venv/bin/python -m pytest -q --durations=20

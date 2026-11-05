@@ -1,6 +1,7 @@
 """Public read boundary and failure behavior of the local shutdown indicator."""
 
 import json
+from types import SimpleNamespace
 
 import pytest
 
@@ -66,8 +67,36 @@ def test_structured_probe_fault_is_nonzero_and_preserves_frames(project, monkeyp
     assert inventory(project) == before
 
 
-def test_installation_status_is_read_only_and_does_not_build(project, capsys):
+@pytest.mark.parametrize(('system', 'supported', 'state', 'exit_code'), [
+    ('Darwin', True, 'BUILD_REQUIRED', 0),
+    ('Linux', False, 'UNSUPPORTED_PLATFORM', 2),
+])
+def test_installation_status_is_read_only_and_does_not_build(
+        project, monkeypatch, capsys, system, supported, state, exit_code):
+    from china_stock_sim.desktop import indicator
+
+    calls = []
+
+    def probe(command, runner, *, timeout=15):
+        assert command[0] == '/bin/launchctl'
+        assert command[1] in {'print', 'print-disabled'}
+        calls.append(command[1])
+        return SimpleNamespace(returncode=3 if command[1] == 'print' else 0, stdout='')
+
+    def forbidden(*args, **kwargs):
+        pytest.fail('A status query must not build or install the indicator')
+
+    monkeypatch.setattr(indicator.platform, 'system', lambda: system)
+    monkeypatch.setattr(indicator, '_invoke', probe)
+    monkeypatch.setattr(indicator, '_directory', lambda root, *args: root / 'isolated-agents')
+    monkeypatch.setattr(indicator, 'build', forbidden)
+    monkeypatch.setattr(indicator, 'install', forbidden)
     before = inventory(project)
-    assert main(['--root', str(project), 'shutdown-indicator-status']) == 0
-    assert json.loads(capsys.readouterr().out)['state'] in {'NOT_INSTALLED', 'BUILD_REQUIRED'}
+    assert main(['--root', str(project), 'shutdown-indicator-status']) == exit_code
+    result = json.loads(capsys.readouterr().out)
+    assert result['supported'] is supported
+    assert result['state'] == state
+    assert result['installed'] is False and result['artifact_matches'] is False
+    assert result['query_error'] is None
+    assert calls == (['print', 'print-disabled'] if supported else [])
     assert inventory(project) == before
