@@ -1,6 +1,8 @@
 # 当前实施状态与续接入口
 
-更新日期：**2026-11-05，北京时间**。唯一运行项目为当前 `simulate-china-stocks` 目录；[机器当前入口](../logs/project-current-state.json)保存同一状态及发生时证据指针。
+更新日期：**2026-11-06，北京时间**。唯一运行项目为当前 `simulate-china-stocks` 目录；[机器当前入口](../logs/project-current-state.json)保存同一状态及发生时证据指针。
+
+**模型连接维护已核验**：用户更新本机 `.env` 的API Key与基础URL；有效公开模型配置与最近LLM冻结输入完全一致，模型名仍为 `qwen3.8-flash`。一次非敏感JSON连接测试成功，约2.75秒；测试期间账本未变化。原三账户、持仓、冻结计划、历史审计继续沿用；原尝试次数和截止规则保持。生产源码和公开配置未修改，新调用读取更新后的连接，无需重装后台任务或发布云端。命令1/2不变，既有数据无需重新下载。详见[连接维护规则](model-layer.md)及本机[脱敏回执](../logs/model-connection-maintenance-2026-11-06.json)；本轮未执行业务规划或全套回归，不扩大为当日业务验收。
 
 **GitHub CI 平台契约修复**：首次公开提交的Ubuntu全量检查为3217通过、36按平台/可选层跳过、1失败；唯一失败来自菜单栏安装状态测试错误要求所有系统返回macOS成功结果。现已显式覆盖Darwin的`BUILD_REQUIRED/0`与Linux的`UNSUPPORTED_PLATFORM/2`，两者保留只读、无构建/安装断言；本机相关12项测试及Ruff通过。生产源码和Git排除规则不变，后台任务无需重装；CI新增最慢20项耗时输出，完整检查范围不减。对应提交的远端最终结果以[GitHub Actions](https://github.com/zifeng-yu/simulate-china-stocks/actions)及本机`logs/github-ci-repair-2026-11-05-final-acceptance.json`为准。
 
