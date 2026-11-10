@@ -2,6 +2,7 @@
 
 import json
 import os
+from contextlib import nullcontext
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from time import monotonic
@@ -386,16 +387,18 @@ class WorkflowApplication:
         if not start or target < start:
             return {'state': 'SKIPPED', 'reason': 'ACCOUNT_NOT_ACTIVATED'}
         if not schedule.get('plan_allowed'):
+            if self.ledger.get_plan_header(account, target_session=target):
+                return self.strategy.recover(account, target, summary=True)
             existing = self.ledger.get_strategy_decision(account, target_session=target)
             if existing and existing['state'] not in {'FROZEN', 'MISSED_CUTOFF', 'CONFIG_CHANGED',
                     'STALE_INPUT', 'MODEL_FAILED', 'INVALID'}:
-                return self.strategy.recover(account, target)
+                return self.strategy.recover(account, target, summary=True)
             return self.days.missing_plan(account, target, 'MISSED_CUTOFF')
         policy = self.ledger.get_account_policy(account, target)['policy']
         key = STRATEGY_KEYS.get(policy['strategy_id'])
         if not key or not self.settings.raw['strategies'][key]['enabled']:
             return {'state': 'SKIPPED', 'reason': 'STRATEGY_DISABLED'}
-        return self.strategy.recover(account, target)
+        return self.strategy.recover(account, target, summary=True)
 
     @observed('backup')
     def _backup(self, day):
@@ -449,7 +452,9 @@ class WorkflowApplication:
                                          'process_birth': probe_process(os.getpid()).get('birth')})
             self.observing = True
             try:
-                with verification_scope(self.root, persist=True) as verification_metrics:
+                review_scope = getattr(self.ledger, 'statement_input_review_scope', None)
+                with (verification_scope(self.root, persist=True) as verification_metrics,
+                      review_scope() if callable(review_scope) else nullcontext()):
                     result = self._run(download)
                 result = {**result, 'validation_metrics': dict(verification_metrics)}
             except Exception as exc:
@@ -474,7 +479,9 @@ class WorkflowApplication:
         for row in self._accounts():
             account = row['account_id']
             try:
-                if self.ledger.pending_work(account)['simulation_start_session']:
+                narrow = getattr(self.ledger, 'revision_state', None)
+                current = narrow(account) if callable(narrow) else self.ledger.pending_work(account)
+                if current['simulation_start_session']:
                     accounts.append(account)
             except Exception as exc:
                 account_errors[account] = safe_error(exc)

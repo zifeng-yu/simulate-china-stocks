@@ -37,11 +37,8 @@ def _retry_failures(previous: dict, repository: MarketRepository, provider) -> i
             and previous.get("raw_reference") and previous.get("finished_at")
             and not any(field in previous for field in (
                 "error", "category", "rejected_raw_reference", "server_retry_at"))):
-        from china_stock_sim.config import local_path
-
         try:
-            repository.validate_raw(previous["raw_reference"])
-            raw = read_json(local_path(repository.root, previous["raw_reference"]))
+            raw = repository.read_validated_raw(previous["raw_reference"])
             if (raw["provider"] == getattr(provider, "provider_id", None)
                     and raw["adapter_version"] == previous["identity"]["adapter"]
                     and aware_time(raw["fetched_at"]) <= aware_time(previous["finished_at"])
@@ -153,8 +150,6 @@ def _put_normalized_event_batch(repository, payload, response, observations, nor
 
 def _put_event_coverage(repository, payload, source_responses, *, assembled_at, repair=False):
     """Reuse only the latest exact proof; source acquisitions remain immutable facts."""
-    from china_stock_sim.config import local_path
-
     now = aware_time(assembled_at)
     key_fields = ["code", "purpose", "start", "end"]
     key = digest({field: payload.get(field, "") for field in key_fields})
@@ -186,7 +181,7 @@ def _put_event_coverage(repository, payload, source_responses, *, assembled_at, 
     contract = {"provider": "distribution_sources", "adapter_version": "1",
                 "dependencies": references}
     if prior is not None:
-        raw = read_json(local_path(repository.root, prior["raw_ref"]))
+        raw = repository.read_validated_raw(prior["raw_ref"])
         if (prior["payload"] == payload
                 and {name: value for name, value in raw.items() if name != "fetched_at"} == contract):
             return prior["id"]
@@ -251,12 +246,9 @@ class MarketUpdater:
             return None
         if (reuse_today and not self.refresh and previous.get("state") == "OK"
                 and previous.get("raw_reference")):
-            from china_stock_sim.config import local_path
-
             try:
                 reference = previous["raw_reference"]
-                self.repository.validate_raw(reference)
-                cached = read_json(local_path(self.root, reference))
+                cached = self.repository.read_validated_raw(reference)
                 fetched_day = aware_time(cached["fetched_at"]).astimezone(
                     ZoneInfo("Asia/Shanghai")).date()
                 if (fetched_day == self.clock().astimezone(ZoneInfo("Asia/Shanghai")).date()
@@ -611,7 +603,8 @@ class MarketUpdater:
                     "pid": os.getpid(), "issues": [], "securities": [], "indices": [],
                     "event_conflicts": [],
                     "pending_event_ranges": [asdict(item) for item in request.pending_event_ranges]}
-        with self.repository.writer():
+        with (self.repository.writer(), self.repository.validation_scope() as validation,
+              self.service.repository.validation_scope(validation)):
             # Holding the exclusive writer lock proves no earlier market writer
             # is active. Preserve its evidence, but do not leave stale RUNNING flags.
             for table in ("jobs", "requests"):

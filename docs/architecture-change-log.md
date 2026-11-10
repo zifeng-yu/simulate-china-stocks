@@ -8,6 +8,8 @@
 
 | 日期/事项 | 决策与边界 | 证据 |
 |---|---|---|
+| 2026-11-10 WP三项耗时优化与全项目整理 | 一次证据序列化/摘要回执/静态冻结投影，同次数据更新原件核验复用，同轮账单输入复核与窄状态；动态指纹、精确cutoff、CAS与冻结完整性保持。三户11月11日同参数维护，原任务恢复；全项目按用途清理缓存、原位归纳文档，金融/审计/有效恢复证据保留。 | [唯一方案](strategy-performance-design.txt)、[3641项验证](../logs/workflow-performance-2026-11-10-test-summary.json)、[性能报告](../logs/workflow-performance-2026-11-10-performance-report.html)、[最终矩阵](../logs/workflow-performance-2026-11-10-final-acceptance.json) |
+| 2026-11-09 SP规划与冻结恢复性能 | 同次输入复用、目标日前可信初始化查询、显式摘要冻结/恢复及细分观测；算法/参数/模型不变，三户11月10日未来维护政策采用，旧事实保留。冷核与热路分别计量；不包含备份、WAITING_INPUT与无请求数据检查优化。 | [方案](strategy-performance-design.txt)、[必要验证](../logs/strategy-performance-2026-11-09-test-summary.json)、[性能报告](../logs/strategy-performance-2026-11-09-performance-report.html)；[实际恢复](../logs/strategy-performance-2026-11-09-natural-run.json)与[最终收口](../logs/strategy-performance-2026-11-09-final-acceptance.json)已完成；首轮冷核成本单列 |
 | 2026-11-05 CI平台契约修复 | Ubuntu全量检查的唯一失败为测试硬编码macOS返回值；显式检验Darwin/Linux状态与退出码、只读且无构建安装，生产逻辑不改；全量CI保留并输出最慢20项耗时。 | [核验方案](../logs/github-ci-repair-2026-11-05-plan-review.json)、[本机12项验证](../logs/github-ci-repair-2026-11-05-test-validation.json)；远端结论见对应提交Actions |
 | 2026-11-05 LP独立发布与公开Git边界 | 上传保留唯一独立本机层，完整程序/配置/模板/专用部署与测试不提交；核心可选接入，公开副本可用，本机原三任务继续，安装定义匹配无需重装。 | [验收](../logs/local-publishing-boundary-2026-11-05-final-acceptance.json) |
 | 2026-11-05 GP首次公开仓库准备 | 脱敏、凭据/运行数据排除、真实候选扫描及空索引保护；先前允许提交发布模板的范围已由LP收紧，历史结果保留。 | [发生时验收](../logs/git-push-preflight-2026-11-05-final-acceptance.json) |

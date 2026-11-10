@@ -18,7 +18,7 @@ class MarketDataReader(Protocol):
                index=False) -> DataResult: ...
 
     def signal_prices(self, code: str, as_of: str, *, size: int = 121,
-                      knowledge_cutoff=None) -> DataResult:
+                      knowledge_cutoff=None, prepared_inputs=None) -> DataResult:
         """Read a causal adjusted-price window using only facts known at the cutoff.
 
         READY rows are ordered by published trading sessions and retain raw_close,
@@ -26,7 +26,16 @@ class MarketDataReader(Protocol):
         size is a positive integer, independent of readiness's fixed 21/121 windows.
         Missing or unverified inputs stay non-READY; this never collects or writes.
         Query event_coverage separately when detailed coverage diagnostics are needed.
+        prepared_inputs optionally supplies this assembly's already-read window,
+        prices, events and coverage DataResults plus exact code/as_of/size/cutoff
+        identity. It is a pure reuse input, never serialized in query evidence.
         """
+        ...
+
+    def compose_signal_prices(self, *, window: DataResult, prices: DataResult,
+                              events: DataResult, event_coverage: DataResult,
+                              knowledge_cutoff) -> DataResult:
+        """Pure combination of same-query facts; no collection or verification bypass."""
         ...
 
     def readiness(self, code: str, as_of: str, purpose: str, *, knowledge_cutoff=None,

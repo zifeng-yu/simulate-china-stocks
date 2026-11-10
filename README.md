@@ -137,6 +137,8 @@
 ```
 `strategy-evaluate`只解析固定输入包；LLM必须同时提供保存响应，不请求模型。`--known-at`固定知识截止；审计可按`--start/--end/--strategy-version/--policy-id`筛选，只有显式`--output`写`reports/strategies/`，CSV仅供audit。公开应用入口为`StrategyApplication.inspect/prepare/evaluate/plan/publish/recover/audit`。
 
+调度内部显式使用 `publish/recover(..., summary=True)` 和已核验的冻结小回执，默认 Python API 与上述 CLI 仍返回完整结果。已有计划的恢复只确认冻结事实；实际撮合、提交和结算仍走原完整金融守卫。新计划只在同次输入组装中复用行情/权益查询，历史初始化可信快路只读取足够证明的目标日前决策，旧父任务仍保留完整读取兼容回退。现行性能方案见 [SP01—SP12与WP01—WP16](docs/strategy-performance-design.txt)：同一证据只规范化一次，摘要发布可消费权威PROPOSED小回执；冻结专用静态投影、单次数据更新原件验证和单轮账单复核均保留完整失效与动态守卫。阶段耗时通过原运行记录查看，实施/部署状态以当前入口及日期回执为准。
+
 未激活账户需先绑定当前实现政策，再显式激活；已有三账户不重复激活、开户或注资。下面仅用于尚未激活账户：
 ```sh
 # data/plans/activate.json内容：{"target_session":"YYYY-MM-DD"}

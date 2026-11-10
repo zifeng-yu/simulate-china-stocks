@@ -5,8 +5,11 @@ import hashlib
 import json
 import sqlite3
 from contextlib import contextmanager
+from contextvars import ContextVar
+from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
+from threading import get_ident
 from zoneinfo import ZoneInfo
 
 from china_stock_sim.config import local_path
@@ -32,6 +35,50 @@ class MarketRepository:
         self.path = local_path(self.root, "data/state/market.sqlite3")
         self.objects = local_path(self.root, "data/raw/market")
         self.snapshots = local_path(self.root, "data/normalized/snapshots")
+        self._raw_validation_context = ContextVar("market_raw_validation", default=None)
+
+    @property
+    def _raw_validation(self):
+        selected = self._raw_validation_context.get()
+        # A copied context must not turn a later ordinary read into a failure
+        # after the owning update has already released its ephemeral proof.
+        return (selected if selected is not None and not selected.closed
+                and selected.owner_thread == get_ident() else None)
+
+    @contextmanager
+    def validation_scope(self, shared=None):
+        """Explicit update-local scope; ordinary readers retain full checking."""
+        from china_stock_sim.market.raw_validation import RawValidationScope
+
+        previous = self._raw_validation
+        selected = shared if shared is not None else previous
+        owned = selected is None
+        if owned:
+            selected = RawValidationScope(self.root)
+        if (not isinstance(selected, RawValidationScope) or selected.root != self.root
+                or selected.closed or selected.owner_thread != get_ident()):
+            raise ValueError("原件验证作用域与项目或生命周期不符")
+        token = self._raw_validation_context.set(selected)
+        try:
+            yield selected
+        finally:
+            self._raw_validation_context.reset(token)
+            if owned:
+                selected.close()
+
+    def read_validated_raw(self, reference):
+        """Return an independent value after the normal recursive raw check."""
+        return deepcopy(self._validated_raw(reference))
+
+    def _validated_raw(self, reference):
+        selected = self._raw_validation
+        if selected is not None:
+            try:
+                return selected.read(reference).body
+            except (OSError, ValueError, TypeError) as exc:
+                raise CorruptData(f"源文件缺失或损坏: {reference}") from exc
+        self.validate_raw(reference)
+        return read_json(local_path(self.root, reference))
 
     @contextmanager
     def writer(self):
@@ -98,7 +145,9 @@ class MarketRepository:
         path = self.objects / f"{key}.json"
         if path.exists():
             try:
-                if digest(read_json(path)) != key:
+                known = (self._raw_validation.lookup(str(path.relative_to(self.root)))
+                         if self._raw_validation is not None else None)
+                if known is None and digest(read_json(path)) != key:
                     raise CorruptData("原始对象内容损坏")
             except (ValueError, OSError) as exc:
                 raise CorruptData(f"原始对象损坏: {path.name}") from exc
@@ -107,6 +156,9 @@ class MarketRepository:
         return str(path.relative_to(self.root))
 
     def validate_raw(self, reference: str, _seen=None) -> None:
+        if self._raw_validation is not None:
+            self._validated_raw(reference)
+            return
         seen = set() if _seen is None else _seen
         if reference in seen:
             return
@@ -172,8 +224,7 @@ class MarketRepository:
         if verify:
             verified = {} if verified is None else verified
             if value["raw_ref"] not in verified:
-                self.validate_raw(value["raw_ref"])
-                verified[value["raw_ref"]] = read_json(local_path(self.root, value["raw_ref"]))
+                verified[value["raw_ref"]] = self._validated_raw(value["raw_ref"])
             raw = verified[value["raw_ref"]]
             if (aware_time(raw["fetched_at"]) != aware_time(value["fetched_at"])
                     or raw["provider"] != value["provider"]):
@@ -215,8 +266,7 @@ class MarketRepository:
                 if not isinstance(reference, str) or reference not in allowed:
                     raise CorruptData("税基事实引用未绑定的原件")
                 if reference not in verified:
-                    self.validate_raw(reference)
-                    verified[reference] = read_json(local_path(self.root, reference))
+                    verified[reference] = self._validated_raw(reference)
                 evidence = verified[reference]
                 try:
                     if evidence["provider"] != source.get("provider"):

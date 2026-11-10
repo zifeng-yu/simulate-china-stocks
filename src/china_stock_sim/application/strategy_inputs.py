@@ -6,7 +6,6 @@ from zoneinfo import ZoneInfo
 from china_stock_sim.common.policies import policy_digest
 from china_stock_sim.common.strategy_definitions import get_definition, normalize_parameters
 from china_stock_sim.common.wire import to_wire
-from china_stock_sim.ledger.decision_evidence import read_business_document
 from china_stock_sim.ledger.kernel import LedgerError
 from china_stock_sim.market.contracts import aware_time, session_date
 from china_stock_sim.strategies.base import PlanningContext
@@ -32,12 +31,16 @@ def assemble_inputs(settings, market, ledger, account_id, target_session, now,
     if now >= deadline:
         return {'state': 'MISSED_CUTOFF', 'reasons': [{'kind': 'MISSED_CUTOFF'}]}
     evidence, required = [], []
+    read_results = {}
 
-    def query(method, **kwargs):
+    def query(method, *, prepared_inputs=None, **kwargs):
         kwargs['knowledge_cutoff'] = cutoff.isoformat()
-        result = getattr(market, method)(**kwargs)
+        call_kwargs = kwargs if prepared_inputs is None else {
+            **kwargs, 'prepared_inputs': prepared_inputs}
+        result = getattr(market, method)(**call_kwargs)
         wire = to_wire(result.as_dict())
         evidence.append({'method': method, 'kwargs': kwargs, 'result': wire})
+        read_results[method] = result
         return wire
 
     day_result = query('calendar_operation', operation='previous_session', day=target)
@@ -83,6 +86,7 @@ def assemble_inputs(settings, market, ledger, account_id, target_session, now,
     uses_model = definition['uses_model']
     length = 21 if uses_model else parameters['lookback_sessions']
     window = query('calendar_operation', operation='window', day=day, size=length)
+    signal_window = read_results['calendar_operation']
     eligibility_window = query('calendar_operation', operation='window', day=day, size=121)
     pool = query('pool', as_of=target)
     month = query('calendar_operation', operation='is_month_end', day=day)
@@ -121,7 +125,10 @@ def assemble_inputs(settings, market, ledger, account_id, target_session, now,
         prices = query('prices', code=code, start=window['data'][0], end=day)
         coverage = query('event_coverage', code=code, start=window['data'][0], end=day)
         events = query('events', code=code)
-        signals = query('signal_prices', code=code, as_of=day, size=length)
+        signals = query('signal_prices', code=code, as_of=day, size=length,
+            prepared_inputs={'code': code, 'as_of': day, 'size': length,
+                'knowledge_cutoff': cutoff.isoformat(), 'window': signal_window,
+                **{key: read_results[key] for key in ('prices', 'events', 'event_coverage')}})
         facts = security['data'] if isinstance(security['data'], dict) else {}
         bars = prices['data'] if isinstance(prices['data'], list) else []
         last = next((p for p in reversed(bars) if p.get('date') == day), {})
@@ -157,11 +164,7 @@ def assemble_inputs(settings, market, ledger, account_id, target_session, now,
             'adjusted_close': [row['adjusted_close'] for row in signals['data']]
                 if signals['state'] == 'READY' else [],
             'raw_bars': bars, 'close': last.get('close')}
-    initial_evaluated = bool(snapshot['rebalance_tasks'])
-    for row in ledger.list_strategy_decisions(account_id):
-        if row.get('decision_core') and row['target_session'] < target:
-            body, _ = read_business_document(settings.root, row['decision_core'])
-            initial_evaluated |= bool(body['calculation'].get('initial_evaluated'))
+    initial_evaluated = ledger.initial_strategy_evaluated(account_id, target)
     values = {'account_id': account_id, 'strategy_id': account['strategy_id'],
         'target_session': target, 'market_as_of': day, 'input_cutoff': cutoff.isoformat(),
         'generated_at': now.isoformat(), 'account': account, 'policy': policy,

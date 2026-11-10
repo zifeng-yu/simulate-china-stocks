@@ -22,6 +22,14 @@
 
 两者不是两套交易系统。首次准备保留的 manifest 和文件用于选池续跑与来源追溯，共享索引才是其他业务层的读取入口。
 
+### 单次更新内的原件核验复用
+
+`MarketUpdater.run`取得原有市场写锁后，为本次更新器及其读取服务共享一个有界验证作用域。首次使用原件时完整核验内容摘要及递归依赖；再次使用时逐个核对整个闭包的设备、inode、大小、mtime与ctime。文件缺失、替换、同长度修改或链接变化会使证明失效，转回完整核验；损坏仍拒绝。索引行的checksum、身份与知识截止每次检查，新增观测和晚到事实不会被结果缓存遮蔽。作用域按上下文和线程隔离，退出或异常后释放；容量不足只回退完整读取，不拒绝合法大原件，也不形成跨轮证明。
+
+每个唯一缓存来源仍执行必要的规范化，已有`self.seen`继续处理同轮请求去重。此次减少的是原件在读取、规范化及保存路径中的重复解析和完整核验，不跳过规范化器变化后的解释，不以旧覆盖掩盖失败刷新。原始`fetched_at`、D日18:10门槛、同日复用、未来知识拒绝、撤回/空批次、重试冷却与硬超时保持。命令1/2的参数、完整候选及必要证券范围、采集顺序、schema和完成语义不变，合格历史无需重新下载。
+
+本项对应[现行性能方案第四章WP05—WP06](strategy-performance-design.txt)。[固定输入脚本](../scripts/benchmark_market_update_performance.py)在临时项目使用受控来源，以100证券×121日比较同日零请求更新；本轮耗时4.774→2.544秒，事实、原件、任务结果及公开查询摘要一致，详见[定向核验](../logs/workflow-performance-2026-11-10-market-verification.json)、[改前](../logs/workflow-performance-2026-11-10-market-reference.json)与[改后](../logs/workflow-performance-2026-11-10-market-current.json)记录。这是离线固定输入结果，不是昨晚79秒阶段的生产重测；综合回归、部署及实际运行仍以文首当前入口为准。
+
 ## 日常与月末采集日程（当前约定）
 
 以下时间均为北京时间（Asia/Shanghai）。**命令1是 `prepare-data`，命令2是 `data-sync`。每个交易日18:10后执行命令2；每月最后一个交易日18:10后，另执行命令1更新候选池。** 自动业务同时受17:00—19:00避让门禁约束，日终任务在19:00后首次检查或开机实际执行；独立人工命令仍遵守18:10门槛。首次准备已完成，不需要每天重新选池。
@@ -206,6 +214,12 @@ manifest = service.evidence_manifest(saved_snapshot_ids, observation_ids=saved_o
 
 账本另外提供 `resolve_tax_holding_rule`、`resolve_event_identity` 两个有依据的维护入口；它们属于账本，数据层无需新命令。`configs/tax_holding_rules.toml`默认空规则，未知税务起点保留 `UNKNOWN/RULE_PENDING`，不猜测日期；原来源未知与冲突仍按用途隔离。备份保留最近30份完整成功日备份，不完整备份不会淘汰最后一份完整备份。
 
+## 同次策略输入复用
+
+`signal_prices(..., prepared_inputs=None)`保持原默认查询路径。可选参数仅供同次组装传入完全一致的code/as_of/size/knowledge_cutoff和window、prices、events、event_coverage四个DataResult；仍检查正整数窗口、实际证券/日期范围/可得时点。该参数不进入持久查询证据，证据的方法、原参数与结果保持，冻结时仍独立重放核验。
+
+公开纯函数入口 `compose_signal_prices(window=..., prices=..., events=..., event_coverage=..., knowledge_cutoff=...)` 与默认signal_prices共用唯一adjusted_series算法，保留窗口→价格→损坏事件→调整价/覆盖的失败顺序和原observation_ids顺序。纯组合不读取来源、不授权交易，也不声称验证调用方提供的原件。此复用不跨账户、调用轮次或知识截止；命令1/2、来源数据和采集策略不变。详见[SP06](strategy-performance-design.txt)。
+
 ## 来源能力
 
 | 来源 | 已接入范围 | 必须保留的边界 |
@@ -340,9 +354,9 @@ SC01—SC04于2026-11-01完成实现、生产重建及独立验收；具体当�
 
 SD01数据支持已完成：公开MarketDataReader.signal_prices及现有服务一致，15项新增消费者测试、当时全项目1278项及Ruff通过。详见[SD01验收](../logs/data-sd01-2026-10-30-verification.json)。命令1/2及历史缓存不变。SM01统一脱敏与公开审计接口已实现并验收，见[SM01验收](../logs/model-sm01-2026-10-30-verification.json)；SX01已实现并验收，见[SX01验收](../logs/execution-sx01-2026-10-30-verification.json)；SL01—SL04已实现并验收，三策略与完整账户业务已接通独立应用，整日流程已实现，WF验收已通过。10月30日SX01执行消费者建设只补策略原件核验、账本signal_prices查询允许范围和递归归档，不修改数据采集程序，不涉及数据库迁移或历史重下。
 
-SI01既有动态账户/冻结身份/中文审计已验收，见[组件方案](interface-design.txt)及[浏览器证据](../logs/interface-si01-2026-10-30-browser-acceptance.json)。本次SL新增政策/决策API与CLI另行验收，不扩大原浏览器通过范围。
+SI01契约与浏览器验收边界见[界面方案](interface-design.txt)及[日期索引](architecture-change-log.md)；SL政策/决策API与CLI的独立验收不扩大原浏览器通过范围。
 
-本轮策略消费者契约补充（2026-11-01）：本轮策略消费者联调修正signal_prices公开issues契约：历史字符串问题以{"kind":原问题代码}返回，原对象问题及观测ID保留，符合DataResult对象列表约定；不消除来源冲突，不改变行情/权益事实，无需原件重建或重新下载。完整验收见[当前状态](implementation-status.md)。
+signal_prices.issues的对象格式、观测ID保留及不重建/重下载边界，统一见[数据层消费者契约](data-layer-backlog.md)。
 
 工作流依赖补充：首次失败回执`job.issues`公开已计算的`next_retry_at`及存在时的`server_retry_at`，流程据此遵守原冷却；不修改退避计数、Retry-After或事实。`WorkflowData.inspect`只读；`collect`与月末准备是显式写任务。月末必须检查内部`PREPARATION_COMPLETE`、`price_ready`和`clues_downloaded`，不能只凭外层`POOL_PREPARED/exit0`认定完成；然后显式维护新池代码，as-of仍是已完成D。
 

@@ -48,13 +48,13 @@ class TradingMixin:
         # This check also protects an idempotent operation replay, which returns
         # before the transaction callback. Recheck inside the transaction below.
         try:
-            decision = verify_plan_decision(self.root, payload, market=self.market, materialize=False)
+            decision = verify_plan_decision(self.root, payload, market=self.market, projection='freeze')
             self._read(account_id, lambda tx: self._verify_registered_decision_tx(tx, payload, decision))
         except LedgerError as exc:
             return exc.as_dict()
 
         def apply(tx):
-            decision = verify_plan_decision(self.root, payload, market=self.market, materialize=False)
+            decision = verify_plan_decision(self.root, payload, market=self.market, projection='freeze')
             registered_decision = self._verify_registered_decision_tx(tx, payload, decision)
             plan_id = identifier(payload['plan_id'], '计划ID')
             plan_hash = digest({k: v for k, v in payload.items()
@@ -171,7 +171,7 @@ class TradingMixin:
                 if task.get('policy_hash') or payload.get('provenance_mode') == 'STRATEGY':
                     transition = self._rebalance_policy_tx(tx, task, target)
                     if transition is not None and decision is not None:
-                        frozen_parent = decision['core']['input_bundle']['context']['parent_task']
+                        frozen_parent = decision['freeze_binding']['parent_task']
                         if (frozen_parent is None or frozen_parent.get('task_id') != task_id
                                 or frozen_parent.get('policy_transition') != transition):
                             raise LedgerError('INTEGRITY_ERROR', '冻结输入缺少原父任务的已验证政策衔接')

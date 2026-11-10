@@ -84,14 +84,16 @@ def verification_identity():
     """Bind derived receipts to the actual validator implementation and dependencies."""
     global _RULE_CACHE
     package = Path(__file__).resolve().parents[1]
-    names = ('ledger/decision_evidence.py', 'ledger/strategy_decisions.py',
+    names = ('ledger/decision_evidence.py', 'ledger/strategy_decisions.py', 'ledger/trading.py',
+             'ledger/evidence.py',
              'ledger/kernel.py', 'common/decisions.py', 'common/wire.py',
              'common/fees.py', 'common/sizing.py', 'config.py', 'ledger/statement_inputs.py',
              'market/statement_fingerprint.py', 'market/service.py', 'market/events.py',
+             'market/repository.py', 'market/raw_validation.py', 'market/storage.py',
              'market/freshness.py', 'market/calendar.py', 'market/quality.py',
              'market/tax_facts.py', 'application/workflow.py', 'ledger/document_objects.py',
              'common/evidence_objects.py', 'ledger/maintenance.py', 'ledger/schema.py',
-             'ledger/plan_storage.py', 'common/strategy_transitions.py', 'ledger/account_policies.py',
+             'ledger/plan_storage.py', 'ledger/queries.py', 'common/strategy_transitions.py', 'ledger/account_policies.py',
              'ledger/backup_links.py', 'common/event_accounting_scope.py', 'ledger/statements.py')
     stamps = tuple((name, tuple(_stamp(package / name))) for name in names)
     if _RULE_CACHE is None or _RULE_CACHE[0] != stamps:
@@ -206,6 +208,13 @@ def cached_validation(root, kind, content_hash):
     _metric('cache_hits')
     _touch_fixed(root, kind, identity)
     return True
+
+
+def validation_details(root, kind, content_hash):
+    """Read details only after checking the proof and every current dependency."""
+    if not cached_validation(root, kind, content_hash):
+        return None
+    return deepcopy(_VALIDATIONS[_validation_key(root, kind, content_hash)].get('details'))
 
 
 def remember_validation(root, kind, content_hash, files, *, details=None, persist=True):
@@ -564,13 +573,47 @@ def read_decision_core(root, reference):
         raise LedgerError(exc.code, exc.message, **exc.details) from None
 
 
-def verify_plan_decision(root, payload, *, market=None, materialize=True):
+def _freeze_binding(core, proposal_hash):
+    """Only static fields needed by freeze's independently executed authority checks."""
+    context = core['input_bundle'].get('context')
+    parent = context.get('parent_task') if isinstance(context, dict) else None
+    return {'schema_version': 1, 'account_policy': deepcopy(core['account_policy']),
+            'parent_task': ({'task_id': parent.get('task_id'),
+                             'policy_transition': deepcopy(parent.get('policy_transition'))}
+                            if isinstance(parent, dict) else None),
+            'source_proposal_hash': proposal_hash}
+
+
+def _known_freeze_binding(binding):
+    return (isinstance(binding, dict) and set(binding) == {
+        'schema_version', 'account_policy', 'parent_task', 'source_proposal_hash'}
+        and type(binding['schema_version']) is int and binding['schema_version'] == 1
+        and isinstance(binding['account_policy'], dict)
+        and isinstance(binding['source_proposal_hash'], str)
+        and len(binding['source_proposal_hash']) == 64
+        and (binding['parent_task'] is None or isinstance(binding['parent_task'], dict)
+             and set(binding['parent_task']) == {'task_id', 'policy_transition'}))
+
+
+def _freeze_projection(binding, closure):
+    # Do not present this narrow authority input as a complete decision core.
+    return {'freeze_binding': deepcopy(binding), 'materialized': False,
+            'closure': {'snapshots': sorted(closure['snapshots']),
+                        'observations': sorted(closure['observations']),
+                        'files': deepcopy(closure['files'])}}
+
+
+def verify_plan_decision(root, payload, *, market=None, materialize=True, projection=None):
     """Check retained proposal/core/envelope without reselecting stocks or reading policy config.
 
     The account-policy snapshot is internally bound here. The authoritative policy
     registry and unique decision index are checked by StrategyDecisionsMixin in the same transaction.
+    Only projection='freeze' omits the full core. Existing materialize=False callers
+    still receive their complete core, including report and execution consumers.
     """
     try:
+        if projection not in {None, 'freeze'}:
+            raise ValueError('未知决策核验投影')
         mode = payload.get('provenance_mode', 'MANUAL')
         report = payload.get('validation_report', {})
         if not isinstance(report, dict) or mode not in {'MANUAL', 'STRATEGY'}:
@@ -595,18 +638,24 @@ def verify_plan_decision(root, payload, *, market=None, materialize=True):
             raise ValueError('缺少策略验证报告')
         ref = normalize_decision_ref(payload['decision_ref'])
         content_hash = digest(payload)
-        if not materialize and cached_validation(root, 'plan_decision', content_hash):
+        if (projection == 'freeze' or not materialize) and cached_validation(root, 'plan_decision', content_hash):
             proof = _VALIDATIONS[_validation_key(root, 'plan_decision', content_hash)]
             details = proof.get('details')
-            if isinstance(details, dict) and {'snapshots', 'observations', 'files'} <= details.keys():
-                core = read_decision_core(root, ref)
-                closure = {**deepcopy(details), 'files': _project_cached_files(proof),
-                           'bodies': {ref['decision_core']['path']: core}}
+            if (isinstance(details, dict) and {'snapshots', 'observations', 'files'} <= details.keys()
+                    and (projection != 'freeze' or _known_freeze_binding(details.get('freeze_binding')))):
+                closure = {key: deepcopy(details[key]) for key in ('snapshots', 'observations')}
+                closure['files'] = _project_cached_files(proof)
                 if market is not None and (closure['snapshots'] or closure['observations']):
+                    if not callable(getattr(market, 'evidence_manifest', None)):
+                        raise LedgerError('INTEGRITY_ERROR', '策略依赖来源缺少公开证据清单接口')
                     manifest = market.evidence_manifest(closure['snapshots'],
                                                        observation_ids=closure['observations'])
                     if manifest.get('state') != 'READY':
                         raise LedgerError('INTEGRITY_ERROR', '策略依赖来源原件无法完整核验')
+                if projection == 'freeze':
+                    return _freeze_projection(details['freeze_binding'], closure)
+                core = read_decision_core(root, ref)
+                closure['bodies'] = {ref['decision_core']['path']: core}
                 return {'source_proposal': source, 'core': core, 'closure': closure,
                         'materialized': False}
         if canonical(ref) != canonical(source.get('decision_ref')) or canonical(ref) != canonical(report.get('decision_ref')):
@@ -614,7 +663,8 @@ def verify_plan_decision(root, payload, *, market=None, materialize=True):
         closure = document_closure(root, {ref['decision_core']['path']: {ref['decision_core']['content_hash']}})
         core = closure['bodies'][ref['decision_core']['path']]
         validate_decision_core(source, core)
-        if digest(source) != report.get('proposal_hash'):
+        proposal_hash = digest(source)
+        if proposal_hash != report.get('proposal_hash'):
             raise ValueError('来源提案摘要不符')
         for field in ['account_id', 'strategy_id', 'strategy_version', 'target_session',
                       'market_as_of', 'account_snapshot_id', 'account_revision']:
@@ -685,9 +735,12 @@ def verify_plan_decision(root, payload, *, market=None, materialize=True):
                                                  observation_ids=sorted(closure['observations']))
             if manifest.get('state') != 'READY':
                 raise LedgerError('INTEGRITY_ERROR', '策略依赖来源原件无法完整核验')
+        binding = _freeze_binding(core, proposal_hash)
         remember_validation(root, 'plan_decision', content_hash, closure['files'], details={
             'snapshots': sorted(closure['snapshots']), 'observations': sorted(closure['observations']),
-            'files': closure['files']})
+            'files': closure['files'], 'freeze_binding': binding})
+        if projection == 'freeze':
+            return _freeze_projection(binding, closure)
         return {'source_proposal': source, 'core': core, 'closure': closure,
                 'materialized': materialize}
     except LedgerError:

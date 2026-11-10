@@ -27,6 +27,7 @@ from china_stock_sim.market.contracts import aware_time, session_date
 from china_stock_sim.market.service import MarketDataService
 from china_stock_sim.models import create_model_client, load_model_settings
 from china_stock_sim.models.audit import ModelAudit
+from china_stock_sim.runtime.recording import stage
 
 
 def audit_wire(value):
@@ -148,22 +149,44 @@ class StrategyApplication:
         except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error) as exc:
             return self._error(exc)
 
-    def _write(self, method, account, payload, revision):
+    def _write(self, method, account, payload, revision, *, with_operation=False):
         operation = 'strategy:' + policy_digest({'method': method, 'account': account,
                                                 'payload': payload, 'revision': revision})
         result = getattr(self.ledger, method)(account, payload,
                             operation_id=operation, expected_revision=revision)
         if result['state'] not in {'APPLIED', 'ALREADY_APPLIED'}:
             raise LedgerError(result['state'], '策略持久操作未完成', receipt=result)
-        return result
+        return (result, operation) if with_operation else result
 
-    def _save(self, row, state, *, reasons=(), proposal=None, core=None):
+    def _save(self, row, state, *, reasons=(), proposal=None, core=None, summary=False):
         payload = {'decision_id': row['decision_id'], 'target_session': row['target_session'],
                    'expected_sequence': row['sequence'], 'state': state, 'reasons': to_wire(reasons)}
         if proposal is not None:
             payload.update(proposal=proposal, decision_core=core)
         account = self.ledger.account_state(row['account_id'], row['target_session'])
-        self._write('save_strategy_decision', row['account_id'], payload, account['account_revision'])
+        if summary and state == 'PROPOSED':
+            receipt, operation = self._write('save_strategy_decision', row['account_id'], payload,
+                                             account['account_revision'], with_operation=True)
+            # This invocation's committed result, not the requested state, authorizes
+            # continuing with our proposal. Replays and older adapters read authority.
+            if (receipt.get('state') == 'APPLIED' and receipt.get('decision_state') == 'PROPOSED'
+                    and receipt.get('decision_id') == row['decision_id']
+                    and type(receipt.get('sequence')) is int
+                    and receipt['sequence'] == row['sequence'] + 1
+                    and receipt.get('operation_id') == operation
+                    and isinstance(receipt.get('commit_id'), str) and len(receipt['commit_id']) == 32
+                    and all(c in '0123456789abcdef' for c in receipt['commit_id'])
+                    and isinstance(receipt.get('payload_hash'), str)
+                    and len(receipt['payload_hash']) == 64
+                    and all(c in '0123456789abcdef' for c in receipt['payload_hash'])
+                    and type(receipt.get('account_revision')) is int
+                    and receipt.get('account_revision') == account['account_revision']):
+                return {'state': 'PROPOSED', 'decision_id': row['decision_id'],
+                        'sequence': receipt['sequence'], 'proposal': proposal,
+                        'decision_ref': proposal['decision_ref'],
+                        'audit_scope': 'PROPOSED_COMMIT_RECEIPT'}
+        else:
+            self._write('save_strategy_decision', row['account_id'], payload, account['account_revision'])
         return self._decision(row['account_id'], row['target_session'])
 
     def _no_plan(self, account, target, reason):
@@ -177,18 +200,20 @@ class StrategyApplication:
         attempts = [a for a in snapshot['model_attempts'] if a['target_session'] == target]
         if row and (attempts or row['state'] not in {'WAITING_INPUT', 'PREPARED'}):
             return row
-        assembled = self._assemble(account, target, cutoff)
+        identity = {'account_id': account, 'target_session': target}
+        assembled = stage('strategy.assemble', lambda: self._assemble(account, target, cutoff), **identity)
         bundle = assembled.get('input_bundle')
         if bundle is None:
             return assembled
         context = bundle['context']
-        self._write('prepare_strategy_decision', account, {
+        stage('strategy.prepare_write', lambda: self._write('prepare_strategy_decision', account, {
             'target_session': target, 'market_as_of': context['market_as_of'],
             'input_cutoff': context['input_cutoff'], 'input_bundle': bundle,
             'expected_sequence': row['sequence'] if row else 0,
             'state': 'PREPARED' if assembled['state'] == 'READY' else 'WAITING_INPUT',
             'reasons': assembled.get('reasons', []), 'required_inputs': assembled.get('required_inputs', []),
-            'parent_task_id': (context['parent_task'] or {}).get('task_id')}, bundle['account_revision'])
+            'parent_task_id': (context['parent_task'] or {}).get('task_id')}, bundle['account_revision']),
+            **identity)
         return self._decision(account, target)
 
     def _guard(self, row, bundle):
@@ -256,11 +281,13 @@ class StrategyApplication:
         core_reference = document(self.root, 'strategy', core)
         return {**proposal, 'decision_ref': {**dummy, 'decision_core': core_reference}}, core
 
-    def _accept(self, row, proposal, core):
+    def _accept(self, row, proposal, core, *, summary=False):
         validation = self.execution.validate(proposal)
         state = validation['status']
         if state == 'VALID':
-            updated = self._save(row, 'PROPOSED', proposal=proposal, core=core)
+            updated = self._save(row, 'PROPOSED', proposal=proposal, core=core, summary=summary)
+            if updated.get('audit_scope') == 'PROPOSED_COMMIT_RECEIPT':
+                return {'state': updated['state'], 'proposed_commit': updated}
             return {'state': updated['state'], 'decision': updated, 'validation': to_wire(validation)}
         if state in {'WAITING_VALIDATION', 'WAITING_DATA'}:
             updated = self._save(row, 'WAITING_VALIDATION', reasons=validation.get('issues', []),
@@ -269,7 +296,7 @@ class StrategyApplication:
         return {'state': 'INVALID', 'decision': row, 'validation': to_wire(validation),
                 'reasons': validation.get('issues', [])}
 
-    def _rules(self, row, bundle):
+    def _rules(self, row, bundle, *, summary=False):
         from china_stock_sim.strategies.rules import plan
 
         context = context_from_bundle(bundle)
@@ -286,7 +313,7 @@ class StrategyApplication:
                 'calculation': to_wire(calculated.calculation), 'initial_evaluated': True}
             self._write('save_rebalance_task', row['account_id'], payload, row['account_revision'])
         proposal, core = self._proposal(row, bundle, calculated)
-        accepted = self._accept(row, proposal, core)
+        accepted = self._accept(row, proposal, core, summary=summary)
         if accepted['state'] == 'INVALID':
             updated = self._save(row, 'INVALID', reasons=accepted.get('reasons', []))
             accepted['decision'] = updated
@@ -302,7 +329,7 @@ class StrategyApplication:
             payload['reason'] = reason
         return self._write('finish_model_attempt', row['account_id'], payload, account['account_revision'])
 
-    def _llm(self, row, bundle):
+    def _llm(self, row, bundle, *, summary=False):
         from china_stock_sim.strategies.llm import build_messages, parse_response
         from china_stock_sim.strategies.llm_call import call_with_deadline
 
@@ -377,7 +404,7 @@ class StrategyApplication:
 
                     calculated = replace(calculated, calculation=calculation)
                     proposal, core = self._proposal(row, bundle, calculated)
-                    accepted = self._accept(row, proposal, core)
+                    accepted = self._accept(row, proposal, core, summary=summary)
                     if accepted['state'] != 'INVALID':
                         return accepted
                     errors = accepted.get('reasons', [])
@@ -388,10 +415,38 @@ class StrategyApplication:
             self._finish_attempt(row, active, 'INVALID', reason='MODEL_OUTPUT_INVALID')
             previous = response.get('text')
 
-    def _run(self, action, account_id, target_session, cutoff):
+    def _frozen_receipt(self, account, target):
+        """A summary consumer checks immutable completion, not dynamic trade guards."""
+        identity = {'account_id': account, 'target_session': target}
+        receipt = stage('strategy.frozen_receipt', lambda: self.ledger.frozen_plan_receipt(
+            account, target_session=target), **identity)
+        if receipt['state'] == 'ABSENT':
+            return None
+        if receipt['state'] == 'UNAVAILABLE':
+            def full_check():
+                existing = self.ledger.get_plan(account, target_session=target)
+                if existing is None:
+                    raise LedgerError('INTEGRITY_ERROR', '冻结计划在核验期间消失')
+                self.execution._view(account, existing['plan_id'])
+                return existing
+            existing = stage('strategy.frozen_verify', full_check, **identity)
+            receipt = self.ledger.frozen_plan_receipt(account, target_session=target)
+            if receipt['state'] == 'UNAVAILABLE':
+                # Derived caches are bounded and disposable. A successful full
+                # verification remains valid when no reusable proof can be kept.
+                receipt = {'plan_id': existing['plan_id'], 'audit_scope': 'FROZEN_FULL_VERIFIED'}
+            elif receipt['state'] != 'READY':
+                raise LedgerError('INTEGRITY_ERROR', '冻结计划在核验期间消失')
+        return {**receipt, 'state': 'FROZEN', 'replayed': True}
+
+    def _run(self, action, account_id, target_session, cutoff, *, summary=False):
         target = session_date(target_session)
         reject_credentials({'account_id': account_id, 'target_session': target})
         with planning_lock(self.root, account_id, target):
+            if summary:
+                frozen = self._frozen_receipt(account_id, target)
+                if frozen is not None:
+                    return frozen
             existing = self.ledger.get_plan(account_id, target_session=target)
             if existing:
                 self.execution._view(account_id, existing['plan_id'])
@@ -439,27 +494,40 @@ class StrategyApplication:
                 proposal = row['proposal']
                 core, _ = read_business_document(self.root, row['decision_core'])
                 outcome = ({'state': 'PROPOSED', 'decision': row} if row['state'] == 'PROPOSED'
-                           else self._accept(row, proposal, core))
+                           else self._accept(row, proposal, core, summary=summary and action == 'publish'))
             else:
-                outcome = self._llm(row, bundle) if bundle['definition']['uses_model'] else self._rules(row, bundle)
+                uses_model = bundle['definition']['uses_model']
+                outcome = stage('strategy.model' if uses_model else 'strategy.rules',
+                    lambda: (self._llm if uses_model else self._rules)(
+                        row, bundle, summary=summary and action == 'publish'),
+                    account_id=account_id, target_session=target)
             if outcome['state'] == 'INVALID' and outcome.get('decision', {}).get('state') not in TERMINAL:
                 outcome['decision'] = self._save(outcome['decision'], 'INVALID',
                                                  reasons=outcome.get('reasons', []))
             if action == 'publish' and outcome['state'] == 'PROPOSED':
-                row = outcome['decision']
-                result = self.execution.freeze(row['proposal'],
-                    operation_id='strategy-freeze:' + row['decision_ref']['decision_core']['content_hash'])
+                row = outcome.get('proposed_commit') or outcome['decision']
+                result = stage('strategy.freeze', lambda: self.execution.freeze(row['proposal'],
+                    operation_id='strategy-freeze:' + row['decision_ref']['decision_core']['content_hash'],
+                    **({'summary': True} if summary else {})),
+                    account_id=account_id, target_session=target)
                 if result['state'] in {'APPLIED', 'ALREADY_APPLIED'}:
-                    return {'state': 'FROZEN', 'decision': self._decision(account_id, target),
-                            'plan_id': result['plan']['plan_id'], 'publication': to_wire(result)}
+                    if summary:
+                        return {'state': 'FROZEN', 'plan_id': result['plan_id'],
+                                'decision_id': row['decision_id'], 'audit_scope': 'FROZEN_COMMIT_RECEIPT'}
+                    return stage('strategy.result_read', lambda: {
+                        'state': 'FROZEN', 'decision': self._decision(account_id, target),
+                        'plan_id': result['plan']['plan_id'], 'publication': to_wire(result)},
+                        account_id=account_id, target_session=target)
+                if 'proposed_commit' in outcome:
+                    row = self._decision(account_id, target)
                 return {'state': result['state'], 'decision': row, 'publication': to_wire(result)}
             if outcome['state'] in TERMINAL - {'FROZEN'}:
                 self._no_plan(account_id, target, outcome['state'])
             return outcome
 
-    def _invoke(self, action, account, target, cutoff):
+    def _invoke(self, action, account, target, cutoff, *, summary=False):
         try:
-            return self._run(action, account, target, cutoff)
+            return self._run(action, account, target, cutoff, summary=summary)
         except (OSError, ValueError, TypeError, KeyError, RuntimeError, sqlite3.Error) as exc:
             return self._error(exc)
 
@@ -469,11 +537,11 @@ class StrategyApplication:
     def plan(self, account_id, target_session, *, knowledge_cutoff=None):
         return self._invoke('plan', account_id, target_session, knowledge_cutoff)
 
-    def publish(self, account_id, target_session, *, knowledge_cutoff=None):
-        return self._invoke('publish', account_id, target_session, knowledge_cutoff)
+    def publish(self, account_id, target_session, *, knowledge_cutoff=None, summary=False):
+        return self._invoke('publish', account_id, target_session, knowledge_cutoff, summary=summary)
 
-    def recover(self, account_id, target_session, *, knowledge_cutoff=None):
-        return self.publish(account_id, target_session, knowledge_cutoff=knowledge_cutoff)
+    def recover(self, account_id, target_session, *, knowledge_cutoff=None, summary=False):
+        return self.publish(account_id, target_session, knowledge_cutoff=knowledge_cutoff, summary=summary)
 
     def evaluate(self, input_bundle, *, model_response=None):
         """Offline fixed-input calculation. Never writes or calls a model."""

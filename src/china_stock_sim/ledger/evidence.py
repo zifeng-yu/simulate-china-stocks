@@ -1,5 +1,6 @@
 """Public market evidence checks and immutable, local business documents."""
 
+import hashlib
 import json
 import os
 import re
@@ -10,7 +11,7 @@ from zoneinfo import ZoneInfo
 
 from china_stock_sim.common import fees as fee_math
 from china_stock_sim.config import local_path
-from china_stock_sim.ledger.kernel import LedgerError, canonical, digest
+from china_stock_sim.ledger.kernel import LedgerError, canonical
 from china_stock_sim.market.contracts import aware_time, session_date
 
 SHANGHAI = ZoneInfo('Asia/Shanghai')
@@ -23,13 +24,16 @@ def document(root, category, value):
     if any(re.search(r'"(?:api[_-]?key|authorization|password)"\s*:', text, re.I)
            for _ in [0]):
         raise LedgerError('INVALID_INPUT', '业务证据包含凭据字段')
-    relative = f'data/plans/{category}/{digest(value)}.json'
+    encoded = text.encode('utf-8')
+    content_hash = hashlib.sha256(encoded).hexdigest()
+    del text
+    relative = f'data/plans/{category}/{content_hash}.json'
     path = local_path(root, relative)
     path.parent.mkdir(parents=True, exist_ok=True)
-    encoded = (text + '\n').encode()
+    encoded += b'\n'
     if path.exists():
         from china_stock_sim.ledger.document_objects import document_layout, read_document_bytes
-        layout = document_layout(root, relative, digest(value))
+        layout = document_layout(root, relative, content_hash)
         if read_document_bytes(root, layout, max_bytes=128 * 1024 * 1024) != encoded:
             raise LedgerError('INTEGRITY_ERROR', '已有证据文件内容损坏')
     else:
@@ -37,7 +41,7 @@ def document(root, category, value):
             from china_stock_sim.common.evidence_objects import put_blob
             from china_stock_sim.ledger.document_objects import FORMAT
             encoded = (canonical({'storage_format': FORMAT,
-                'logical_content_hash': digest(value),
+                'logical_content_hash': content_hash,
                 'object_ref': put_blob(root, encoded)}) + '\n').encode()
         fd, temporary = tempfile.mkstemp(prefix='.ledger-', dir=path.parent)
         try:
@@ -49,7 +53,7 @@ def document(root, category, value):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
-    return {'path': relative, 'content_hash': digest(value)}
+    return {'path': relative, 'content_hash': content_hash}
 
 
 def _fee_call(function, *args, **kwargs):

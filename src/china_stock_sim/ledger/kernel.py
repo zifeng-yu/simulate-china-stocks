@@ -234,7 +234,7 @@ class Transaction:
         return ' AND '.join(clauses), parameters
 
     def select(self, table, *, fields, equals=None, in_values=None, ranges=None,
-               order_by=None, limit=None):
+               order_by=None, limit=None, decode_json=True):
         """Explicit bounded projection; never decode excluded evidence columns."""
         table = self._table(table)
         if not fields or not isinstance(fields, (tuple, list)):
@@ -254,7 +254,7 @@ class Transaction:
         nested = {'data_evidence', 'snapshot_ids', 'market_snapshot_ids', 'positions',
                   'issues', 'order_states', 'payments', 'assessments', 'actions', 'event_ids',
                   'details', 'orders', 'fills', 'lot_allocations'}
-        for row in rows:
+        for row in rows if decode_json else ():
             for key in nested.intersection(row):
                 if isinstance(row[key], str) and row[key][:1] in '[{':
                     row[key] = json.loads(row[key])

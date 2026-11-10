@@ -289,6 +289,111 @@ class QueriesMixin:
             return {**rows[0], 'audit_scope': 'PLAN_LOCATOR'} if rows else None
         return self._read(account_id, read)
 
+    def frozen_plan_receipt(self, account_id, *, target_session):
+        """Read a verified frozen identity, never a permission to submit or settle.
+
+        Missing derived proofs request a full consumer verification. This query
+        never expands originals or writes proofs, including in a writer scope.
+        Mutable execution guards remain the execution/commit path's responsibility.
+        """
+        from china_stock_sim.ledger.decision_evidence import (
+            cached_validation,
+            validation_details,
+            verification_scope,
+        )
+        from china_stock_sim.ledger.kernel import LedgerError, digest
+        from china_stock_sim.ledger.plan_storage import FORMAT, _header_identity
+
+        day = session_date(target_session)
+
+        def unavailable(reason):
+            return {'state': 'UNAVAILABLE', 'reason': reason}
+
+        def bounded(tx, table, identity):
+            size = tx.db.execute(f'SELECT length(CAST(data AS BLOB)) FROM {table} '
+                'WHERE account_id=? AND id=?', (account_id, identity)).fetchone()
+            if size is None:
+                raise LedgerError('INTEGRITY_ERROR', '冻结计划引用的权威索引缺失')
+            return tx.get(table, identity) if size[0] <= 1024 * 1024 else None
+
+        def read(tx):
+            found = tx.select('plans', fields=('id', 'storage_format'),
+                              equals={'target_session': day}, limit=2)
+            if not found:
+                return {'state': 'ABSENT', 'target_session': day}
+            if len(found) != 1:
+                raise LedgerError('INTEGRITY_ERROR', '同日存在重复冻结计划')
+            if found[0]['storage_format'] != FORMAT:
+                return unavailable('LEGACY_FULL_PLAN')
+            plan = bounded(tx, 'plans', found[0]['id'])
+            if plan is None:
+                return unavailable('LEGACY_LARGE_INDEX')
+            if plan.get('provenance_mode') != 'STRATEGY':
+                return unavailable('MANUAL_PLAN')
+            header = validation_details(self.root, 'frozen_plan_header', _header_identity(plan))
+            ref = plan['decision_ref']
+            decision = bounded(tx, 'strategy_decisions', ref['decision_id'])
+            if decision is None:
+                return unavailable('LEGACY_LARGE_INDEX')
+            decision_verified = cached_validation(self.root, 'strategy_decision', digest(decision))
+            if (plan.get('account_id') != account_id or plan.get('target_session') != day
+                    or plan.get('strategy_id') != tx.account['strategy_id']
+                    or plan.get('status') not in {'FROZEN', 'EMPTY'}
+                    or decision.get('state') != 'FROZEN' or decision.get('plan_id') != plan['plan_id']
+                    or decision.get('plan_document') != plan['document']
+                    or decision.get('decision_ref') != ref or decision.get('target_session') != day
+                    or decision.get('market_as_of') != plan['market_as_of']
+                    or decision.get('strategy_id') != plan['strategy_id']
+                    or decision.get('strategy_version') != plan['strategy_version']):
+                raise LedgerError('INTEGRITY_ERROR', '冻结计划与权威决策身份不一致')
+            policy = self._registered_policy_tx(tx, day, plan['input_cutoff'])
+            if (policy['policy_id'] != ref['account_policy_id']
+                    or policy['policy_hash'] != ref['account_policy_hash']
+                    or decision['policy_id'] != policy['policy_id']
+                    or decision['policy_hash'] != policy['policy_hash']
+                    or decision['policy_document'] != policy['document']
+                    or policy['definition']['implementation_hash'] != ref['strategy_implementation_hash']):
+                raise LedgerError('INTEGRITY_ERROR', '冻结决策与权威政策不一致')
+            fields = ('order_id', 'plan_id', 'code', 'side', 'quantity', 'limit_price',
+                      'order_index', 'target_session', 'reserved_cash_fen', 'reserved_shares')
+            frozen = plan['orders']
+            orders = tx.select('orders', fields=('id', *fields),
+                               equals={'target_session': day}, order_by=('order_index',),
+                               limit=len(frozen) + 1)
+            if (len(orders) != len(frozen) or (plan['status'] == 'EMPTY') != (len(orders) == 0)
+                    or [o['order_id'] for o in orders] != plan['order_ids']
+                    or [o['order_id'] for o in frozen] != plan['order_ids']):
+                raise LedgerError('INTEGRITY_ERROR', '冻结订单集合或顺序不一致')
+            for index, (order, original) in enumerate(zip(orders, frozen, strict=True)):
+                if (order['id'] != order['order_id'] or order['order_index'] != index
+                        or order['plan_id'] != plan['plan_id']
+                        or any(order[key] != original.get(key) for key in fields)):
+                    raise LedgerError('INTEGRITY_ERROR', '冻结订单静态合同不一致')
+            if not isinstance(header, dict) or not header.get('resolved_plan_hash'):
+                return unavailable('PLAN_HEADER_VERIFICATION_REQUIRED')
+            if not decision_verified:
+                return unavailable('DECISION_ORIGINAL_VERIFICATION_REQUIRED')
+            details = validation_details(self.root, 'plan_decision', header['resolved_plan_hash'])
+            if not isinstance(details, dict) or not {'snapshots', 'observations'} <= details.keys():
+                return unavailable('PLAN_DECISION_VERIFICATION_REQUIRED')
+            if details['snapshots'] or details['observations']:
+                manifest = self.market.evidence_manifest(details['snapshots'],
+                    observation_ids=details['observations'])
+                if manifest.get('state') != 'READY':
+                    raise LedgerError('INTEGRITY_ERROR', '冻结策略依赖来源原件无法完整核验')
+            return {'state': 'READY', 'audit_scope': 'FROZEN_RECEIPT', 'account_id': account_id,
+                'target_session': day, 'plan_id': plan['plan_id'], 'plan_hash': plan['plan_hash'],
+                'frozen_at': plan['frozen_at'], 'order_count': len(orders),
+                'decision_id': decision['decision_id'], 'decision_state': 'FROZEN'}
+
+        try:
+            with verification_scope(self.root, persist=False):
+                return self._read(account_id, read)
+        except LedgerError:
+            raise
+        except (KeyError, TypeError, ValueError, OSError):
+            raise LedgerError('INTEGRITY_ERROR', '冻结回执的原件或来源完整性无法确认') from None
+
     def terminal_execution_status(self, account_id, plan_id):
         """Read an already-completed execution without reopening its original tree.
 

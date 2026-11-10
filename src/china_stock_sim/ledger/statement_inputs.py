@@ -1,6 +1,11 @@
 """Detect changed public facts behind published statements without rewriting trades."""
 
+import hashlib
+import json
+from contextlib import contextmanager
+from contextvars import ContextVar
 from decimal import Decimal, InvalidOperation
+from threading import get_ident
 
 from china_stock_sim.ledger.decision_evidence import (
     _metric,
@@ -27,6 +32,82 @@ EVENT_FIELDS = {
 NUMBERS = {'close', 'cash_per_share', 'bonus_per_share', 'capital_per_share'}
 AUDIT_FIELDS = {'_provenance', 'observation_ids', 'fetched_at', 'available_at',
                 'raw_reference', 'source_evidence', 'sources'}
+_REVIEW_SCOPE = ContextVar('statement_input_review_scope', default=None)
+_REVIEW_MAX_ENTRIES = 4096
+_REVIEW_MAX_BYTES = 16 * 1024 * 1024
+
+
+def _review_get(scope, key):
+    if scope is None or scope['disabled']:
+        return None
+    try:
+        value = scope['values'].get(key)
+        if value is not None:
+            scope['metrics']['hits'] += 1
+        return value
+    except Exception:
+        # Derived acceleration is disposable; its failure cannot become a
+        # financial error or a successful validation result.
+        scope['disabled'] = True
+        scope['metrics']['disabled'] = True
+        scope['values'] = {}
+        return None
+
+
+def _review_put(scope, key, value, size):
+    if scope is None or scope['disabled']:
+        return
+    try:
+        if (key not in scope['values'] and len(scope['values']) < _REVIEW_MAX_ENTRIES
+                and scope['bytes'] + size <= _REVIEW_MAX_BYTES):
+            scope['values'][key] = value
+            scope['bytes'] += size
+            scope['metrics'].update(entries=len(scope['values']), bytes=scope['bytes'])
+    except Exception:
+        scope['disabled'] = True
+        scope['metrics']['disabled'] = True
+        scope['values'] = {}
+
+
+def _encoded_hash(value):
+    return hashlib.sha256(value.encode('utf-8')).hexdigest()
+
+
+def _statement_queries(statement, session, scope, owner, validator):
+    raw = statement.get('data_evidence')
+    key = None
+    if isinstance(raw, str):
+        if scope is not None:
+            key = ('statement', owner, statement['id'], session, statement['statement_revision'],
+                   statement['knowledge_cutoff'], _encoded_hash(raw), validator)
+        compiled = _review_get(scope, key)
+        if compiled is not None:
+            return compiled
+        try:
+            queries = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise LedgerError('INTEGRITY_ERROR', '已发布账单输入证据损坏', session=session) from exc
+    else:
+        queries = raw
+    if not isinstance(queries, list) or not queries:
+        raise LedgerError('INTEGRITY_ERROR', '已发布账单缺少公开输入证据', session=session)
+    compiled = []
+    for item in queries:
+        if not isinstance(item, dict):
+            raise LedgerError('INTEGRITY_ERROR', '账单输入查询格式无效', session=session)
+        method, kwargs = item.get('method'), item.get('kwargs')
+        if (method not in QUERY_FIELDS or not isinstance(kwargs, dict)
+                or not set(kwargs) <= QUERY_FIELDS[method] or 'knowledge_cutoff' not in kwargs):
+            raise LedgerError('INTEGRITY_ERROR', '账单含不支持的输入查询', session=session)
+        if aware_time(kwargs['knowledge_cutoff']) != aware_time(statement['knowledge_cutoff']):
+            raise LedgerError('INTEGRITY_ERROR', '账单查询与知识截止不一致', session=session)
+        before = canonical(_projection(method, item.get('result'), session))
+        compiled.append((method, canonical(kwargs), before))
+    compiled = tuple(compiled)
+    if key is not None:
+        size = sum(len(part.encode('utf-8')) for item in compiled for part in item) + len(str(key))
+        _review_put(scope, key, compiled, size)
+    return compiled
 
 
 def _semantic(value, field=None):
@@ -75,33 +156,47 @@ def _projection(method, result, day):
 
 
 class StatementInputsMixin:
+    @contextmanager
+    def statement_input_review_scope(self):
+        """Disposable immutable projections for one workflow call, never due/finance results.
+
+        All market fingerprints, current statement bytes, transaction state and
+        cutoffs remain fresh. Nested calls get their own scope; no cache escapes
+        this ledger instance, market adapter, account, or context lifetime.
+        """
+        scope = {'owner': self, 'market': self.market, 'values': {}, 'bytes': 0,
+                 'thread': get_ident(), 'closed': False, 'disabled': False,
+                 'metrics': {'hits': 0, 'entries': 0, 'bytes': 0, 'disabled': False}}
+        token = _REVIEW_SCOPE.set(scope)
+        try:
+            yield scope['metrics']
+        finally:
+            _REVIEW_SCOPE.reset(token)
+            scope['closed'] = True
+            scope['values'].clear()
+
     def _statement_input_changes(self, tx, day, cutoff):
+        scope = _REVIEW_SCOPE.get()
+        if scope is not None and (scope['owner'] is not self or scope['market'] is not self.market
+                or scope['closed'] or scope['thread'] != get_ident()):
+            scope = None
+        validator = verification_identity()
+        owner = tx.account_id
         statements = {}
         for row in tx.select('daily_nav', fields=('id', 'session', 'statement_revision',
-                'knowledge_cutoff', 'data_evidence'), ranges={'session': {'lte': day}}):
+                'knowledge_cutoff', 'data_evidence'), ranges={'session': {'lte': day}},
+                decode_json=False):
             if row['statement_revision'] > statements.get(row['session'], {}).get('statement_revision', 0):
                 statements[row['session']] = row
         cache, changes = {}, []
         for session, statement in sorted(statements.items()):
             if session > day:
                 continue
-            original_cutoff = aware_time(statement['knowledge_cutoff'])
-            if cutoff < original_cutoff:
+            if cutoff < aware_time(statement['knowledge_cutoff']):
                 raise LedgerError('INVALID_INPUT', '复查截止不能早于已发布账单知识时点')
-            queries = statement.get('data_evidence')
-            if not isinstance(queries, list) or not queries:
-                raise LedgerError('INTEGRITY_ERROR', '已发布账单缺少公开输入证据', session=session)
-            for item in queries:
-                if not isinstance(item, dict):
-                    raise LedgerError('INTEGRITY_ERROR', '账单输入查询格式无效', session=session)
-                method, kwargs = item.get('method'), item.get('kwargs')
-                if (method not in QUERY_FIELDS or not isinstance(kwargs, dict)
-                        or not set(kwargs) <= QUERY_FIELDS[method]
-                        or 'knowledge_cutoff' not in kwargs):
-                    raise LedgerError('INTEGRITY_ERROR', '账单含不支持的输入查询', session=session)
-                if aware_time(kwargs['knowledge_cutoff']) != original_cutoff:
-                    raise LedgerError('INTEGRITY_ERROR', '账单查询与知识截止不一致', session=session)
-                fresh_kwargs = {**kwargs, 'knowledge_cutoff': cutoff.isoformat()}
+            queries = _statement_queries(statement, session, scope, owner, validator)
+            for method, encoded_kwargs, before in queries:
+                fresh_kwargs = {**json.loads(encoded_kwargs), 'knowledge_cutoff': cutoff.isoformat()}
                 key = canonical({'method': method, 'kwargs': fresh_kwargs})
                 if key not in cache:
                     try:
@@ -113,40 +208,65 @@ class StatementInputsMixin:
                                 raise LedgerError('INTEGRITY_ERROR', '账单输入依赖缺失或损坏',
                                                   method=method, session=session)
                         receipt_id = None
-                        proof = None
                         if dependency and dependency.get('state') == 'READY':
+                            # Coverage checks raw leaf times; event batches can bind
+                            # future members filtered by cutoff. Their unchanged file
+                            # fingerprints alone do not prove identical query results.
+                            query = (fresh_kwargs if method in {'events', 'event_coverage'} else
+                                {k: v for k, v in fresh_kwargs.items() if k != 'knowledge_cutoff'})
                             receipt_id = digest({'kind': 'statement_query',
-                                'validator': verification_identity(), 'method': method,
-                                'query': {k: v for k, v in fresh_kwargs.items() if k != 'knowledge_cutoff'},
+                                'validator': validator, 'method': method, 'query': query,
                                 'dependency': dependency['fingerprint']})
-                            proof = _receipt(self.root, receipt_id)
-                        if proof and proof.get('kind') == 'statement_query' and isinstance(proof.get('result'), dict):
-                            cache[key] = proof['result']
-                            _metric('cache_hits')
-                        else:
-                            cache[key] = getattr(self.market, method)(**fresh_kwargs).as_dict()
-                            _metric('full_checks')
-                            if receipt_id and cache[key].get('state') != 'CORRUPT':
-                                _save_receipt(self.root, receipt_id, kind='statement_query',
-                                    dependency_fingerprint=dependency['fingerprint'], result=cache[key])
+                        cache[key] = {'receipt_id': receipt_id, 'dependency': dependency,
+                                      'result': None}
                     except Exception as exc:
                         raise LedgerError('INTEGRITY_ERROR', '账单输入公开查询不可用',
                                           method=method, session=session) from exc
-                current = cache[key]
-                if current.get('state') == 'CORRUPT':
-                    raise LedgerError('INTEGRITY_ERROR', '账单输入原件损坏', method=method, session=session)
-                before = _projection(method, item['result'], session)
-                after = _projection(method, current, session)
-                if canonical(before) != canonical(after):
+                query = cache[key]
+                after_key = ('projection', owner, query['receipt_id'], session)
+                after = (_review_get(scope, after_key) if query['receipt_id'] else None)
+                if after is None:
+                    current = self._statement_query_result(query, method, fresh_kwargs, session)
+                    after = canonical(_projection(method, current, session))
+                    if query['receipt_id']:
+                        _review_put(scope, after_key, after, len(after.encode('utf-8')) + len(str(after_key)))
+                if before != after:
+                    current = self._statement_query_result(query, method, fresh_kwargs, session)
                     changes.append({'session': session,
                         'statement_revision': statement['statement_revision'], 'method': method,
-                        'before_hash': digest(before), 'after_hash': digest(after),
+                        'before_hash': _encoded_hash(before), 'after_hash': _encoded_hash(after),
                         'data_evidence': {'method': method, 'kwargs': fresh_kwargs, 'result': current}})
         affected = min((row['session'] for row in changes), default=None)
         return {'state': 'CHANGED' if changes else 'READY', 'session': day,
                 'knowledge_cutoff': cutoff.isoformat(), 'affected_from': affected,
                 'affected_through': max(statements) if affected else None,
                 'changes': changes, 'read_only': True}
+
+    def _statement_query_result(self, query, method, kwargs, session):
+        if query['result'] is None:
+            try:
+                receipt_id = query['receipt_id']
+                # Time-sensitive proofs are useful only inside this call's
+                # bounded scope. Do not read old cross-cutoff receipts or write
+                # one disposable file for every moving clock instant.
+                persistent = method not in {'events', 'event_coverage'}
+                proof = _receipt(self.root, receipt_id) if receipt_id and persistent else None
+                if proof and proof.get('kind') == 'statement_query' and isinstance(proof.get('result'), dict):
+                    current = proof['result']
+                    _metric('cache_hits')
+                else:
+                    current = getattr(self.market, method)(**kwargs).as_dict()
+                    _metric('full_checks')
+                    if receipt_id and persistent and current.get('state') != 'CORRUPT':
+                        _save_receipt(self.root, receipt_id, kind='statement_query',
+                            dependency_fingerprint=query['dependency']['fingerprint'], result=current)
+            except Exception as exc:
+                raise LedgerError('INTEGRITY_ERROR', '账单输入公开查询不可用',
+                                  method=method, session=session) from exc
+            if current.get('state') == 'CORRUPT':
+                raise LedgerError('INTEGRITY_ERROR', '账单输入原件损坏', method=method, session=session)
+            query['result'] = current
+        return query['result']
 
     def statement_input_changes(self, account_id, session, *, knowledge_cutoff=None):
         day = session_date(session)

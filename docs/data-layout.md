@@ -27,6 +27,8 @@
 | `src/china_stock_sim/scheduler/` | 工作区/公共写锁辅助；纯日程规划、耐久journal、共用写锁及显式launchd维护 |
 | `scripts/`、`tests/` | 环境和本机入口、核心行为验证；云端专用测试仅本机，混合测试保留核心覆盖 |
 
+业务调度性能方案保留在唯一附件 `docs/strategy-performance-design.txt`。`scripts/benchmark_strategy_performance.py`、`scripts/benchmark_market_update_performance.py`、`scripts/benchmark_statement_review_performance.py`各自只在新建临时夹具中比较固定输入，禁止对正式根运行业务或调用来源/模型。日期化回执分别保留原SP与本次 `logs/workflow-performance-2026-11-10-*`；对照源码只作临时测试基线，不安装为第二套程序。`market/raw_validation.py`是market层内部有界单次验证支持，不建立业务库或新持久缓存；账单投影仅驻留本轮内存，既有验证证明目录继续沿用。完整文件盘点使用有摘要的压缩JSONL与小型用途/处置清单，避免把全树正文复制到当前入口。
+
 具体完成范围及[六层依赖图](implementation-status.md#分层依赖关系)见实施状态，唯一现行设计见[架构方案](architecture.txt)。application包含策略/执行子流程及workflow整日编排，不额外增加业务层。
 
 账户管理的当前边界：配置只为空库提供初始种子；config/schema/CLI和看板已解除固定三账户/本金限制，并从持久登记查询。ledger/store.initialize对已有库只核验，不根据种子新增、删除或改本金。list_accounts/get_account_profile已提供；运行中原子开户/base政策接口已通过SL01验收，不能仅在TOML加一行冒充开户。真实库仍为原三账户；当前观察起点、政策和计划状态见唯一当前入口。
@@ -166,9 +168,9 @@ SD01数据支持已完成：公开MarketDataReader.signal_prices及现有服务�
 
 SI01报告新增：每账户公开审计JSON写reports/strategies/，页面CSV按同一账户快照生成；非默认账户文件名采用账户ID的SHA256安全名，避免路径与大小写碰撞。默认三账户文件名保持可读。SI01本身不增加数据库或表；本次SL02的权威政策和未封存决策通过独立公开API/CLI查询，不能把原冻结计划页面当全部新索引展示。
 
-SI01既有动态账户/冻结身份/中文审计已验收，见[组件方案](interface-design.txt)及[浏览器证据](../logs/interface-si01-2026-10-30-browser-acceptance.json)。本次SL新增政策/决策API与CLI另行验收，不扩大原浏览器通过范围。
+SI01契约与浏览器验收边界见[界面方案](interface-design.txt)及[日期索引](architecture-change-log.md)；SL政策/决策API与CLI的独立验收不扩大原浏览器通过范围。
 
-本轮策略消费者契约补充（2026-11-01）：本轮策略消费者联调修正signal_prices公开issues契约：历史字符串问题以{"kind":原问题代码}返回，原对象问题及观测ID保留，符合DataResult对象列表约定；不消除来源冲突，不改变行情/权益事实，无需原件重建或重新下载。完整验收见[当前状态](implementation-status.md)。
+signal_prices.issues的对象格式、观测ID保留及不重建/重下载边界，统一见[数据层消费者契约](data-layer-backlog.md)。
 
 ## 整日流程持久状态
 

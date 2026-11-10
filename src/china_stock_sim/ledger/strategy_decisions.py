@@ -11,6 +11,7 @@ from china_stock_sim.ledger.decision_evidence import (
     document_closure,
     read_business_document,
     remember_validation,
+    verification_scope,
 )
 from china_stock_sim.ledger.evidence import document
 from china_stock_sim.ledger.kernel import LedgerError, canonical, digest, identifier
@@ -113,6 +114,48 @@ def verify_decision_record(root, row, *, materialize=True):
 
 
 class StrategyDecisionsMixin:
+    def initial_strategy_evaluated(self, account_id, target_session):
+        """Read the first sufficient, verified earlier evaluation, not all proposals.
+
+        Only an authenticated earlier decision enables the narrow fast path.
+        A non-future legacy task without a confirming decision takes the former
+        full-read compatibility path; that path does not assert that its mutable
+        task fields have gained a new integrity proof.
+        """
+        target = session_date(target_session)
+
+        def read(tx):
+            after = None
+            while True:
+                bounds = {'lt': target}
+                if after is not None:
+                    bounds['gt'] = after
+                selected = tx.select('strategy_decisions', fields=('id', 'target_session'),
+                    ranges={'target_session': bounds}, order_by=('target_session',), limit=1)
+                if not selected:
+                    break
+                row = verify_decision_record(self.root,
+                    tx.get('strategy_decisions', selected[0]['id']), materialize=False)
+                after = row['target_session']
+                if row.get('decision_core'):
+                    core, _ = read_business_document(self.root, row['decision_core'])
+                    if bool(core['calculation'].get('initial_evaluated')):
+                        return True
+            if tx.select('rebalance_tasks', fields=('id',),
+                         ranges={'start_session': {'lte': target}}, limit=1):
+                # Compatibility with saved-parent-before-core recovery and old
+                # manually created tasks. Preserve the former verification work
+                # instead of treating their index presence as a trusted shortcut.
+                for stored in tx.list('strategy_decisions'):
+                    row = verify_decision_record(self.root, stored)
+                    if row.get('decision_core') and row['target_session'] < target:
+                        read_business_document(self.root, row['decision_core'])
+                return True
+            return False
+
+        with verification_scope(self.root, persist=False):
+            return self._read(account_id, read)
+
     def get_strategy_decision(self, account_id, *, decision_id=None, target_session=None):
         if (decision_id is None) == (target_session is None):
             raise LedgerError('INVALID_INPUT', '决策查询须明确一个决策ID或目标日')
@@ -328,7 +371,8 @@ class StrategyDecisionsMixin:
                 raise LedgerError('CONFLICT', '已有策略决策，不能通过MANUAL绕过登记')
             return None
         ref = payload['decision_ref']
-        row = verify_decision_record(self.root, tx.get('strategy_decisions', ref['decision_id']))
+        row = verify_decision_record(self.root, tx.get('strategy_decisions', ref['decision_id']),
+                                     materialize=False)
         target = payload['target_session']
         if row is None:
             # Pre-schema3 frozen plans retain their own verified evidence. Only
@@ -339,11 +383,19 @@ class StrategyDecisionsMixin:
             if old and old['plan_hash'] == plan_hash:
                 return None
         policy = self._registered_policy_tx(tx, target, payload['input_cutoff'])
+        binding = decision['freeze_binding']
+        proposal = row.get('proposal') if row is not None else None
+        if isinstance(proposal, dict) and proposal.get('storage_format') == 'decision-core-proposal-v1':
+            proposal_matches = (set(proposal) == {'storage_format', 'source', 'content_hash'}
+                and proposal['source'] == row.get('decision_core') == ref['decision_core']
+                and proposal['content_hash'] == binding['source_proposal_hash'])
+        else:
+            proposal_matches = proposal is not None and digest(proposal) == binding['source_proposal_hash']
         if (row is None or row['target_session'] != target or row['state'] not in {'PROPOSED', 'FROZEN'}
                 or row['policy_id'] != policy['policy_id'] or row['policy_hash'] != policy['policy_hash']
                 or canonical(ref) != canonical(row['decision_ref'])
-                or canonical(decision['core']['account_policy']) != canonical(policy['policy'])
-                or canonical(decision['source_proposal']) != canonical(row['proposal'])):
+                or canonical(binding['account_policy']) != canonical(policy['policy'])
+                or not proposal_matches):
             raise LedgerError('CONFLICT', 'STRATEGY封存须有匹配的权威政策及PROPOSED决策')
         if row['state'] == 'FROZEN':
             if row['plan_id'] != payload['plan_id']:

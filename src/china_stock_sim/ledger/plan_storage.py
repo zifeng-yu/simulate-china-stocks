@@ -65,7 +65,8 @@ def resolve_plan(root, row):
     if 'id' in row:
         result['id'] = row['id']
     remember_validation(root, 'frozen_plan_header', _header_identity(row), [
-        verified, *verified.get('storage_dependencies', [])])
+        verified, *verified.get('storage_dependencies', [])],
+        details={'resolved_plan_hash': digest(result)})
     return result
 
 

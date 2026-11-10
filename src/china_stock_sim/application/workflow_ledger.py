@@ -18,12 +18,17 @@ class LedgerWorkflow:
     def __init__(self, settings, *, ledger, market, clock):
         self.settings, self.ledger, self.market, self.clock = settings, ledger, market, clock
 
+    def _revision(self, account, day):
+        narrow = getattr(self.ledger, 'revision_state', None)
+        current = narrow(account) if callable(narrow) else self.ledger.account_state(account, day)
+        return current['account_revision']
+
     def write(self, method, account, payload, *, tag=None):
         day = payload.get('session', payload.get('effective_date', payload.get('target_session')))
-        current = self.ledger.account_state(account, day)
+        revision = self._revision(account, day)
         identity = policy_digest({'method': method, 'payload': payload, 'tag': tag})
         return getattr(self.ledger, method)(account, payload,
-            operation_id='workflow:' + identity, expected_revision=current['account_revision'])
+            operation_id='workflow:' + identity, expected_revision=revision)
 
     def _evidence(self, code, day, operation, event_ids=None):
         cutoff = self.clock().isoformat()
@@ -145,7 +150,7 @@ class LedgerWorkflow:
         # A further correction can arrive at the same recorded clock instant.
         # Bind the close to its financial revision, not only day and cutoff.
         receipt = self.write('close_session', account, payload,
-                             tag=self.ledger.account_state(account, day)['account_revision'])
+                             tag=self._revision(account, day))
         return {'receipt': receipt, 'statement': self.ledger.daily_statement(account, day)}
 
     def missing_plan(self, account, day, reason='OFFLINE_NO_PREMARKET_PLAN'):

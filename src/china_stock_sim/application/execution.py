@@ -25,6 +25,7 @@ from china_stock_sim.ledger.decision_evidence import (
 )
 from china_stock_sim.ledger.kernel import LedgerError
 from china_stock_sim.market.service import MarketDataService
+from china_stock_sim.runtime.recording import stage
 
 TERMINAL = {'FILLED', 'NOT_FILLED'}
 
@@ -151,7 +152,7 @@ class ExecutionApplication:
             return {**_error(exc), 'results': [], 'submission_status': 'NOT_SUBMITTED',
                     'completion_status': 'ERROR', 'account_id': account_id, 'plan_id': plan_id}
 
-    def freeze(self, proposal, *, operation_id):
+    def freeze(self, proposal, *, operation_id, summary=False):
         """Explicit write path; validation is never itself a booking receipt."""
         try:
             reject_credentials({'proposal': proposal, 'operation_id': operation_id})
@@ -161,18 +162,27 @@ class ExecutionApplication:
             if existing:
                 if existing.get('validation_report', {}).get('proposal_hash') == policy_digest(request):
                     self._view(request['account_id'], existing['plan_id'])
+                    if summary:
+                        return {'state': 'ALREADY_APPLIED', 'plan_id': existing['plan_id'],
+                                'audit_scope': 'FROZEN_COMMIT_RECEIPT'}
                     return {'state': 'ALREADY_APPLIED', 'validation': existing['validation_report'],
                             'commit': {'state': 'ALREADY_APPLIED', 'plan_id': existing['plan_id']},
                             'plan': existing}
                 raise ExecutionSupportError('CONFLICT', '该目标日已有不同的冻结计划')
-            validation = self.validate(proposal)
+            identity = {'account_id': request['account_id'], 'target_session': request['target_session']}
+            validation = stage('execution.plan_validate', lambda: self.validate(proposal), **identity)
             if validation['status'] != 'VALID':
                 return {'state': validation['status'], 'validation': validation,
                         'commit': None, 'plan': None}
             envelope = validation['plan_envelope']
-            commit = self.ledger.freeze_plan(request['account_id'], envelope,
-                operation_id=operation_id, expected_revision=validation['account_revision'])
-            plan = (self.ledger.get_plan(request['account_id'], target_session=request['target_session'])
+            commit = stage('execution.freeze_commit', lambda: self.ledger.freeze_plan(
+                request['account_id'], envelope, operation_id=operation_id,
+                expected_revision=validation['account_revision']), **identity)
+            if summary and commit['state'] in {'APPLIED', 'ALREADY_APPLIED'}:
+                return {'state': commit['state'], 'plan_id': commit['plan_id'],
+                        'audit_scope': 'FROZEN_COMMIT_RECEIPT', 'commit': commit}
+            plan = (stage('execution.freeze_result', lambda: self.ledger.get_plan(
+                request['account_id'], target_session=request['target_session']), **identity)
                     if commit['state'] in {'APPLIED', 'ALREADY_APPLIED'} else None)
             return {'state': commit['state'], 'validation': validation, 'commit': commit, 'plan': plan}
         except (ValueError, TypeError, KeyError, OSError, sqlite3.Error) as exc:

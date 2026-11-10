@@ -268,6 +268,9 @@ WAITING/NOT_DUE记录使用attempt级操作键，不占用订单终态或权益�
 来源订正与更正：未入账待核项可用新的事实判断原计划；已提交成交保留原输入和结果，不因源订正自动重选股票、改限价或重新撮合。
 已发布账单输入复查：statement_input_changes(account_id,session,knowledge_cutoff=None)为公开纯读接口，以各日账单保存的公开查询方法、证券/日期范围重查当前事实，只将知识截止推进至不晚于实际处理时点；不接受调用方提供“已经变化”的结论，也不将未来截止或早于原账单的截止当作合法恢复。返回READY/CHANGED、affected_from/affected_through和逐查询差异证据；缺失、损坏或不支持的原证据明确失败。
 refresh_statement_inputs(account_id,{session,knowledge_cutoff},operation_id,expected_revision)为显式写入口，在账本事务内再次完成上述查询与校验。确有变化时记录不可变新查询证据和重述待办，设置或扩展restate_from/restate_through；后续仍按原日序追加账单修订，不直接改现金、成交或冻结计划。新增proof及其公开市场查询依赖纳入原递归备份证据链。没有业务事实变化，或既存重述范围已完整覆盖时，返回ALREADY_APPLIED并回滚本次无新增事务；不增加财务/报告修订或操作记录。
+同轮语义复用（WP07）：公开statement_input_review_scope只保存已校验before/after的不可变语义字符串及查询描述，限制4096项、16MiB编码权重；不保存due、余额、资格、事务成功或调用方变化结论。作用域绑定账本实例、市场适配器、账户、线程与调用生命周期，退出及异常时丢弃；复制上下文在退出后或其他线程只做普通检查。历史before键包含账单ID、日期、revision、原cutoff、data_evidence精确编码SHA和验证器身份；每次仍重选最新账单及检查当前cutoff。Transaction.select的decode_json默认True，仅此受控路径显式取未解码JSON以检查原编码，不改变其他公开查询的结构。
+after仅在本次公开statement_input_fingerprint重新返回READY且依赖身份匹配时复用；原件闭包、索引事实或可用时点变化须触发重新检查。events批次成员与event_coverage原件叶的时间可见性另绑定精确cutoff，这两类不读取旧持久statement_query回执，也不为每个瞬时cutoff新建回执；其余支持查询沿用原派生证明。无指纹能力、不可用或缓存失败回到公开完整查询，来源损坏保留原错误。变化证据始终带本次kwargs/cutoff与完整公开结果；refresh仍在自己的事务中重查并执行revision CAS。复用不扩展账单、成交、冻结原件的修改权限，也不使只读查询创建持久缓存。
+只需启用日期或写入前account_revision的流程准备使用revision_state（WP08），旧适配器保留原读取回退；金融提交继续执行原事务守卫。唯一性能方案见docs/strategy-performance-design.txt第四章，隔离验证见logs/workflow-performance-2026-11-10-statement-review-verification.json；真实维护及全项目整理是否完成，以待封口的logs/workflow-performance-2026-11-10-final-acceptance.json为准。
 差异比较依据账单实际消费的语义：历史估值比较收盘价、日期及可信状态；权益比较相关登记日事项的身份、条款、日期、状态、冲突及税务事实。仅新观测ID、原件/来源审计引用、fetched_at/available_at或完整coverage覆盖范围扩展，不应在事实相同时触发重述；开盘价/量额变化也不应事后重算原成交。历史日已经FINAL不能跳过本次检查，复查失败的账户暂停其依赖处理，其他账户可继续。本契约的本次完整验收见唯一当前入口，不改写既往账本/WF封口记录。
 安全更正必须有correction_id、被关联流水/成交/事件、原值/新值、原因、新证据、有效日/实际处理时间及影响日范围；用追加的冲销/调整流水和修订账单表达，禁止删除原记录。
 默认自动处理范围限于能逐分对账、不会使既有股数/现金或后续已冻结计划矛盾的确定权益补记、费用/金额差额等。改变成交成立与否、出现已卖股份不足、未知税基、身份不明或需修改过去策略的更正进入维护冲突；不做无限级联回放，也不偷偷扣成负余额。维护必须走同一更正接口，不手改SQL。
@@ -461,9 +464,9 @@ SL最终验收事实（2026-11-01，数据补采前）：SL-C01—SL-C20逐项PA
 
 新旧policy原件、transition和原任务引用随既有闭包归档；恢复使用备份自己的政策、关联和配置，不用当前TOML补齐。旧无transition备份仍可恢复；新关联缺失、摘要或immutable contract不符不得COMPLETE。正式未来采用、今日旧单结算及下一日续办各有真实回执，不能从隔离测试推断已执行。
 
-NL源码/专项证据见logs/nl-daily-limit-2026-11-02-requirements.json与logs/nl-daily-limit-2026-11-02-verification.json；当前状态IMPLEMENTED_AND_AUTOMATED_ACCEPTED，正式policy-set和生产重启不由隔离测试代替。
+NL自动化验收属于2026-11-02发生时记录，见[日期索引](architecture-change-log.md)及执行层NL说明；正式政策采用和生产重启不由隔离测试代替。
 
-本轮统一收尾口径（2026-11-02）：方案与源码仅此现行版本；NL01—NL12统一映射见logs/run-home-2026-11-02-requirements.json。三账户沿用原激活/注资，11月2日冻结计划和两个原父任务保持；11月3日未来政策已显式登记。政策变化属于未来生效，不冒充今天已执行新计划或已成交。原三户策略共享实现身份对齐，LLM参数/算法与最多五只要求保持。真实后台复跑的最新终态及证据统一见当前实施状态。
+2026-11-02三账户及NL收尾事实见[日期索引](architecture-change-log.md)与logs/run-home-2026-11-02-requirements.json；原账户、冻结计划及父任务保持，未来政策不追改历史。现行政策维护与父任务衔接遵循strategy-design.txt第十六节、ledger-design.txt第二十节，最新真实运行见implementation-status.md。
 
 十九、schema4与有界证据持久化（SG01—SG18，现行实现契约）
 本节只改变存储、读取和验证的组织，全部金额、FIFO、权益/红利税、原策略身份、09:00封存截止及幂等提交语义保持。正式切换与恢复运行以唯一当前状态和本次操作收据为准，不能以隔离测试代替生产结果。
@@ -481,6 +484,9 @@ account-policy-set/schedule_account_policy现支持两种明确窄衔接：既�
 维护前后策略家族、implementation-2版本、uses_model、展示名和全部实际参数不变，文件清单键集合不变；非空实现hash差异只限strategy-design第十六节列明四文件，规则/模型/提示改变拒绝。新transition保存from/to政策引用、生效日、实际known_at、精确task binding及parameters_hash；旧policy、旧计划和父任务原件不可改写。
 活动父任务直接匹配前政策，或继承已经完整验证的前驱衔接中的同一不可变binding；必须逐层验证不可变原件、连续修订并检测环，不能信任前驱索引自报tasks。保留原目标/排名/窗口/参数和实际进度，freeze事务仍重验同一活任务及剩余量。备份_strategy_integrity与策略读取共用verify_transition_chain，from_policy_document递归进入证据闭包，缺失/篡改不能COMPLETE。验证回执绑定此验证器和account_policies源码，维护后失效重验。
 这是现行公开接口契约及隔离验收，不宣称本轮生产政策已采用；操作回执、生效日和真实恢复状态见唯一当前入口。证据：logs/storage-governance-2026-11-03-policy-maintenance-validation.json。
+
+冻结与初始化窄查询（SP02—SP05）：frozen_plan_receipt(account_id, target_session=...)在一致只读事务返回READY/ABSENT/UNAVAILABLE；READY仅证明冻结事实及引用完整性，包含计划/决策身份和订单数，不含完整原件。热路径核对当前验证器身份、完整验证证明及文件依赖、权威历史政策/决策、订单静态合同，并继续调用公开市场evidence_manifest核验来源。任何索引身份或静态合同损坏拒绝；没有可复用证明则UNAVAILABLE，由应用完整核验。缓存有界且可丢弃，完整核验成功不以缓存安装成功为条件。只读查询不建立持久证明，不证明当前可成交/可提交/已结算；旧格式、大索引与MANUAL保留完整兼容读取。
+initial_strategy_evaluated(account_id,target_session)按目标日前决策窄查，核验所消费记录和core后取initial_evaluated；先前已核验True足够，不宣称已审计全部历史。无确认core但存在非未来旧父任务时保留旧完整读取兼容，未来任务排除。schema仍为4，无迁移；详见strategy-performance-design.txt。
 
 二十一、现行预案适用性与日结幂等（CR，2026-11-03）
 普通DISTRIBUTION/NO_DISTRIBUTION、明确PROPOSED或CANCELLED、无冲突、无已到经济日期且无既有实施/资格/记账/未决case关联时，仅观察或未生效撤销，不确认应收，也不阻断当日最终日结。公告/预案日期不是权益资格日。IMPLEMENTED缺日期、UNKNOWN/COMPLEX、真实冲突、既有记账关联保持原保守义务；后来实施/到期须正常处理。判定详见storage-runtime-governance-design CR02—03，共享纯函数供账本与流程一致使用，不篡改市场原用途就绪事实。

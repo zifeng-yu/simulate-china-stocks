@@ -304,17 +304,82 @@ class MarketDataService:
         except (CorruptData, OSError, ValueError, sqlite3.Error) as exc:
             return DataResult("CORRUPT", [], ({"kind": "CORRUPT", "reason": str(exc)},))
 
+    @staticmethod
+    def compose_signal_prices(*, window, prices, events, event_coverage,
+                              knowledge_cutoff) -> DataResult:
+        """Combine already-read causal facts without I/O or a second adjustment algorithm.
+
+        The caller supplies results from the same code, window and cutoff. This
+        pure composition is not an evidence verification or permission to trade;
+        frozen query evidence is still independently replayed by the ledger.
+        """
+        from china_stock_sim.market.signals import adjusted_series
+
+        if not window.ready:
+            return window
+        if not prices.ready:
+            return prices
+        if events.state == "CORRUPT":
+            return events
+        result = adjusted_series(prices.data, events.data, knowledge_cutoff,
+                                 events_complete=event_coverage.ready)
+        ids = tuple(dict.fromkeys(prices.observation_ids + events.observation_ids
+                                  + event_coverage.observation_ids))
+        issues = tuple({"kind": issue} if isinstance(issue, str) else issue
+                       for issue in result["issues"])
+        return DataResult(result["state"], result["rows"], issues, ids)
+
     def signal_prices(self, code: str, as_of: str, *, size: int = 121,
-                      knowledge_cutoff=None) -> DataResult:
+                      knowledge_cutoff=None, prepared_inputs=None) -> DataResult:
         """Read an explicit signal window without collecting or changing stored facts.
 
         Matches MarketDataReader.signal_prices; readiness keeps its fixed windows.
         Adjustment uses the same knowledge cutoff for prices, calendar and events.
         Coverage failures remain non-READY; event_coverage exposes their full details.
         """
-        from china_stock_sim.market.signals import adjusted_series
-
+        as_of = session_date(as_of)
+        if type(size) is not int or size < 1:
+            raise ValueError("交易日窗口必须是正整数")
         cutoff = knowledge_cutoff or timestamp()
+        if prepared_inputs is not None:
+            expected = {'code': code, 'as_of': as_of, 'size': size,
+                        'knowledge_cutoff': aware_time(cutoff).isoformat()}
+            if (not isinstance(prepared_inputs, dict)
+                    or set(prepared_inputs) != set(expected) | {
+                        'window', 'prices', 'events', 'event_coverage'}
+                    or any(prepared_inputs[key] != value for key, value in expected.items())
+                    or any(not isinstance(prepared_inputs[key], DataResult)
+                           for key in ('window', 'prices', 'events', 'event_coverage'))):
+                raise ValueError('信号复用输入须绑定同一证券、窗口和知识截止')
+            window = prepared_inputs['window']
+            if window.ready:
+                dates = window.data
+                if (not isinstance(dates, list) or len(dates) != size
+                        or any(session_date(day) != day for day in dates)
+                        or sorted(set(dates)) != dates or dates[-1] > as_of):
+                    raise ValueError('信号复用窗口与查询不一致')
+                selected_code, selected_cutoff = normalize_code(code), aware_time(cutoff)
+                for name in ('prices', 'events', 'event_coverage'):
+                    result = prepared_inputs[name]
+                    if name == 'prices' and not result.ready or name == 'events' and result.state == 'CORRUPT':
+                        break
+                    if name == 'event_coverage' and not result.ready:
+                        continue
+                    rows = result.data if isinstance(result.data, list) else (
+                        [result.data] if isinstance(result.data, dict) else [])
+                    for row in rows:
+                        if (not isinstance(row, dict) or normalize_code(row['code']) != selected_code
+                                or name == 'prices' and not dates[0] <= row['date'] <= dates[-1]
+                                or name == 'event_coverage' and result.ready and not (
+                                    row.get('start', '9999') <= dates[0]
+                                    and row.get('end', '') >= dates[-1])):
+                            raise ValueError('信号复用事实与证券或窗口不一致')
+                        known = row.get('_provenance', {}).get('available_at') or row.get('available_at')
+                        if known and aware_time(known) > selected_cutoff:
+                            raise ValueError('信号复用事实晚于知识截止')
+            return self.compose_signal_prices(
+                **{key: prepared_inputs[key] for key in (
+                    'window', 'prices', 'events', 'event_coverage')}, knowledge_cutoff=cutoff)
         window = self.calendar_operation("window", as_of, size=size, knowledge_cutoff=cutoff)
         if not window.ready:
             return window
@@ -325,12 +390,8 @@ class MarketDataService:
         if events.state == "CORRUPT":
             return events
         coverage = self.event_coverage(code, window.data[0], window.data[-1], knowledge_cutoff=cutoff)
-        result = adjusted_series(bars.data, events.data, cutoff, events_complete=coverage.ready)
-        ids = tuple(dict.fromkeys(bars.observation_ids + events.observation_ids
-                                  + coverage.observation_ids))
-        issues = tuple({"kind": issue} if isinstance(issue, str) else issue
-                       for issue in result["issues"])
-        return DataResult(result["state"], result["rows"], issues, ids)
+        return self.compose_signal_prices(window=window, prices=bars, events=events,
+            event_coverage=coverage, knowledge_cutoff=cutoff)
 
     def execution_facts(self, code, session, *, knowledge_cutoff=None, rule_context=None):
         from china_stock_sim.market.signals import execution_facts
