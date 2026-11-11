@@ -8,6 +8,7 @@
 
 | 日期/事项 | 决策与边界 | 证据 |
 |---|---|---|
+| 2026-11-11 CI运行镜像固定 | `ubuntu-latest`切换Ubuntu 26.04后无法安装锁定的Python 3.12.10；固定Ubuntu 24.04，Python/依赖锁/安全扫描/全量测试保持。生产运行不变，最终CI结论按实际提交回执记录。 | [公开Git审查与CI回执](../logs/git-push-2026-11-11-receipt.json) |
 | 2026-11-11 持仓买入字段 | 汇总新增原买入日期/价格，多批次编号对应；仅展示维护，86项验证通过。本机重建及云端重发完成，线上三账户字段HTTP核验通过；浏览器视觉检查因工具超时未完成。 | [本轮验证](../logs/holding-buy-fields-2026-11-11-validation.json) |
 | 2026-11-10 WP三项耗时优化与全项目整理 | 一次证据序列化/摘要回执/静态冻结投影，同次数据更新原件核验复用，同轮账单输入复核与窄状态；动态指纹、精确cutoff、CAS与冻结完整性保持。三户11月11日同参数维护，原任务恢复；全项目按用途清理缓存、原位归纳文档，金融/审计/有效恢复证据保留。 | [唯一方案](strategy-performance-design.txt)、[3641项验证](../logs/workflow-performance-2026-11-10-test-summary.json)、[性能报告](../logs/workflow-performance-2026-11-10-performance-report.html)、[最终矩阵](../logs/workflow-performance-2026-11-10-final-acceptance.json) |
 | 2026-11-09 SP规划与冻结恢复性能 | 同次输入复用、目标日前可信初始化查询、显式摘要冻结/恢复及细分观测；算法/参数/模型不变，三户11月10日未来维护政策采用，旧事实保留。冷核与热路分别计量；不包含备份、WAITING_INPUT与无请求数据检查优化。 | [方案](strategy-performance-design.txt)、[必要验证](../logs/strategy-performance-2026-11-09-test-summary.json)、[性能报告](../logs/strategy-performance-2026-11-09-performance-report.html)；[实际恢复](../logs/strategy-performance-2026-11-09-natural-run.json)与[最终收口](../logs/strategy-performance-2026-11-09-final-acceptance.json)已完成；首轮冷核成本单列 |

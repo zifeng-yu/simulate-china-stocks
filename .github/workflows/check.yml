@@ -9,7 +9,8 @@ permissions:
 
 jobs:
   offline-checks:
-    runs-on: ubuntu-latest
+    # Python 3.12.10 has a published build for 24.04, not every future latest image.
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
         with:
