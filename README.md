@@ -60,7 +60,7 @@
 ./.venv/bin/china-stock-sim dashboard-install
 ./.venv/bin/china-stock-sim dashboard-uninstall
 ```
-`dashboard-status`与`dashboard-service-status`分别查询首页投影和刷新服务；`dashboard-refresh`只写本机首页。交易页由既有账本报告生成，刷新首页不代替重建交易页。
+`dashboard-status`与`dashboard-service-status`分别查询首页投影和刷新服务；`dashboard-refresh`只写本机首页。交易页由既有账本报告生成，刷新首页不代替重建交易页。当前持仓汇总包含买入日期和原买入价；多批次按编号对应，含费成本均价另列。
 
 本机唯一发布层 `src/china_stock_sim/publishing/` 独立承担两页白名单包构建、校验、导出、SSH传输、回执、09:00/21:00时点去重和上传LaunchAgent维护。它读取独立本机配置，不触发采集、策略或账本；主程序通过可选接口接入，不复制另一套发布实现。缺少该层时，核心CLI、业务调度、本机页面和菜单栏照常可用，首页将上传能力标为未安装；本机已有该层及配置，原上传任务继续使用。
 

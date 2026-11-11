@@ -177,16 +177,38 @@ def trade_days(account, audit, view):
     return content
 
 
+def holding_buy_cells(holding):
+    """Keep original dates/prices paired across the remaining valuation-day lots."""
+    dates, prices = [], []
+    batches = holding.get('buy_lots', [])
+    for index, batch in enumerate(batches, 1):
+        prefix = f'{index}. ' if len(batches) > 1 else ''
+        kind = batch.get('source_kind')
+        if kind == 'BUY':
+            dates.append(prefix + str(batch.get('acquired_date') or '待核'))
+            value = price(batch.get('price'))
+            prices.append(prefix + (value if value != '—' else '待核'))
+        else:
+            label = '权益到账（非买入）' if kind == 'EQUITY' else '来源待核'
+            dates.append(prefix + label)
+            prices.append(prefix + label)
+    suffix = '；批次待核' if batches and holding.get('buy_lots_reason') else ''
+    return {'buy_dates': ('；'.join(dates) or '待核') + suffix,
+            'buy_prices': ('；'.join(prices) or '待核') + suffix}
+
+
 def holdings_section(view):
     day = view.get('valuation_session') or '尚无日结'
     content = '<div class="section-heading"><div><h2>当前持仓与买入成本</h2><p>估值所属日：' + text(day) + '。此区域不随上方交易日选择改变；可卖数量按本次账户快照。</p></div></div>'
-    content += table([{**r, 'stock': stock(r), 'price': price(r.get('price'))} for r in view.get('holdings', [])], [
-        ('stock', '股票', False), ('shares', '持有股数', False), ('sellable_shares', '当前可卖', False),
+    content += table([{**r, **holding_buy_cells(r), 'stock': stock(r), 'price': price(r.get('price'))} for r in view.get('holdings', [])], [
+        ('stock', '股票', False), ('buy_dates', '买入日期', False), ('buy_prices', '买入价（元/股）', False),
+        ('shares', '持有股数', False), ('sellable_shares', '当前可卖', False),
         ('cost_fen', '剩余含费成本（元）', True), ('cost_price', '含费成本均价（元/股）', False),
         ('price', '估值收盘价（元）', False), ('price_date', '价格日期', False),
         ('market_value_fen', '市值（元）', True), ('floating_pnl_fen', '持仓浮动盈亏（元）', True),
         ('status', '估值状态', False), ('reason', '说明', False)], empty='当前没有已记录持仓。')
     content += '<p class="muted">持仓浮动盈亏＝持仓市值－剩余含费成本，属于累计持仓损益。含费成本均价＝剩余成本÷剩余股数，不等同于原始买入成交价；部分卖出后沿用账本FIFO剩余成本。尚未到账股份另列。</p>'
+    content += '<p class="muted">买入日期与买入价取下方剩余批次的原始成交记录；多批次按相同编号对应列出，不合并为均价。权益到账不视为买入，缺失或不一致的批次显示待核。</p>'
     receivables = [r for r in view.get('holdings', []) if str(r.get('receivable_quantity') or '0') not in {'0', '0.0', '0.00'} or r.get('share_receivable_value_fen')]
     if receivables:
         content += table([{**r, 'stock': stock(r)} for r in receivables], [('stock', '股票', False),

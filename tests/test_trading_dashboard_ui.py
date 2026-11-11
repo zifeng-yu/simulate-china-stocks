@@ -135,3 +135,19 @@ def test_history_controls_are_scoped_and_not_a_prebuilt_unbounded_html_table():
     assert 'data-public-section="trade-history"' in html and 'S1-all-trades.csv' in html
     assert '不是包含分红' in html and '清仓后再次买入' in html
     assert '导出全部实际成交' not in history_section({'complete': False}, None)
+
+
+def test_holdings_summary_pairs_original_buy_dates_prices_and_marks_non_buy_lots():
+    holding = {'code': 'SH600000', 'buy_lots': [
+        {'source_kind': 'BUY', 'acquired_date': '2026-10-01', 'price': '10.00'},
+        {'source_kind': 'BUY', 'acquired_date': '2026-11-02', 'price': '12.30'},
+        {'source_kind': 'EQUITY', 'acquired_date': '2026-11-03', 'price': None},
+        {'source_kind': 'BUY', 'acquired_date': '2026-11-04', 'price': None},
+    ], 'buy_lots_reason': '部分批次原始买入证据待核'}
+    summary = holdings_section({'holdings': [holding]}).split('</table>', 1)[0]
+    assert '买入日期' in summary and '买入价（元/股）' in summary
+    assert '1. 2026-10-01；2. 2026-11-02；3. 权益到账（非买入）；4. 2026-11-04；批次待核' in summary
+    assert '1. 10.00；2. 12.30；3. 权益到账（非买入）；4. 待核；批次待核' in summary
+    assert '暂无可核对' not in summary
+    empty = holdings_section({'holdings': [{'code': 'SH600000'}]}).split('</table>', 1)[0]
+    assert '<td>待核</td><td>待核</td>' in empty
